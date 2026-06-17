@@ -46,7 +46,7 @@ except:
         device="cpu",
         compute_type="int8"
     )
-python live_transcription.py --translate
+
 
 # Audio settings
 # -------------------------------
