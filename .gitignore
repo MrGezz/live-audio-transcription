@@ -40,3 +40,21 @@ htmlcov/
   
 # Environment variables file  
 .env 
+_models/faster-whisper-medium/
+_models/ggml-medium-q5_0.bin
+_models/ggml-small-q5_1.bin
+_whisper.cpp/bench.exe
+_whisper.cpp/ggml-base.dll
+_whisper.cpp/ggml-cpu.dll
+_whisper.cpp/ggml-vulkan.dll
+_whisper.cpp/ggml.dll
+_whisper.cpp/main.exe
+_whisper.cpp/test-vad-full.exe
+_whisper.cpp/test-vad.exe
+_whisper.cpp/whisper-bench.exe
+_whisper.cpp/whisper-cli.exe
+_whisper.cpp/whisper-quantize.exe
+_whisper.cpp/whisper-server.exe
+_whisper.cpp/whisper-vad-speech-segments.exe
+_whisper.cpp/whisper.dll
+my_transcript.txt
