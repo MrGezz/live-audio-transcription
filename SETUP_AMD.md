@@ -42,12 +42,21 @@ live-audio-transcription\_whisper.cpp\
 
 ## 2. Download the GGML model
 
-Get `ggml-medium-q5_0.bin` (~540 MB) from
+Get `ggml-small-q8_0.bin` from
 https://huggingface.co/ggerganov/whisper.cpp/tree/main
 and place it at:
 ```
-live-audio-transcription\_models\ggml-medium-q5_0.bin
+live-audio-transcription\_models\ggml-small-q8_0.bin
 ```
+That filename is what `start_whisper_server.bat` loads by default. To use a
+different model, drop it in `_models\` and pass its filename:
+```
+start_whisper_server.bat ggml-medium-q5_0.bin
+```
+Bigger models are more accurate but slower — if inference takes longer than
+`--slide` seconds, `live_transcription.py` starts skipping audio to stay live
+and prints a `[perf]` warning.
+
 (Your existing `_models\faster-whisper-medium` folder stays — it is still used by the
 CPU fallback.)
 
@@ -69,13 +78,17 @@ python live_transcription.py --backend local    # force CPU faster-whisper
 python live_transcription_lite.py         # console-only, auto backend
 ```
 
-New flags:
+Backend flags added by this setup:
 
 | Flag | Default | Purpose |
 |---|---|---|
 | `--backend` | `auto` | `server` (GPU) / `local` (CPU) / `auto` |
 | `--server-url` | `http://127.0.0.1:8080` | whisper-server address |
 | `--model` | `_models\faster-whisper-medium` | CPU fallback model path |
+
+See the **All flags** table in [README.md](README.md) for the complete list —
+`--capture`, `--buffer`, `--slide`, `--silence-threshold` and the rest live there
+so there is only one place to keep current.
 
 ## Notes / expectations
 

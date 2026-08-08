@@ -1,3 +1,4 @@
+import sys
 import numpy as np
 import queue
 import difflib
@@ -9,6 +10,17 @@ import tkinter as tk
 from datetime import datetime
 
 from whisper_backends import create_backend, BackendError
+
+# Console encoding
+# -------------------------------
+# Transcript lines contain characters outside cp1252 (U+2192 "->"). A real
+# Windows console handles those fine, but a REDIRECTED stdout (> log.txt, a
+# pipe, pythonw) falls back to the locale code page and the first print would
+# raise UnicodeEncodeError inside the worker thread - which then dies silently
+# while the overlay keeps running. Under pythonw both streams are None.
+for _stream in (sys.stdout, sys.stderr):
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 # Argument parsing
 # -------------------------------
@@ -104,8 +116,21 @@ if args.capture == "loopback":
     for i, s in enumerate(speakers):
         marker = "  <- Windows default" if s.id == default_spk.id else ""
         print(f"{i} {s.name}{marker}")
-    sel = input(f"Select output device [Enter = default: {default_spk.name}]: ").strip()
-    spk = default_spk if sel == "" else speakers[int(sel)]
+    while True:
+        sel = input(f"Select output device [Enter = default: {default_spk.name}]: ").strip()
+        if sel == "":
+            spk = default_spk
+            break
+        try:
+            idx = int(sel)
+        except ValueError:
+            print("Invalid choice - enter a number from the list, or Enter for default.")
+            continue
+        # Explicit range check: speakers[-1] would silently pick the last device.
+        if 0 <= idx < len(speakers):
+            spk = speakers[idx]
+            break
+        print(f"Invalid choice - enter 0-{len(speakers) - 1}, or Enter for default.")
     loop_mic = sc.get_microphone(str(spk.id), include_loopback=True)
     print(f"Capturing loopback of: {spk.name}")
 
@@ -135,11 +160,22 @@ else:
     # Classic recording-device path (Stereo Mix, microphones, Line In)
     import sounddevice as sd
 
+    devices = sd.query_devices()
     print("Available audio devices:")
-    for i, dev in enumerate(sd.query_devices()):
+    for i, dev in enumerate(devices):
         print(i, dev['name'], "Input channels:", dev['max_input_channels'])
 
-    device_id = int(input("Enter input device ID (e.g. Stereo Mix): "))
+    while True:
+        sel = input("Enter input device ID (e.g. Stereo Mix): ").strip()
+        try:
+            device_id = int(sel)
+        except ValueError:
+            print("Invalid choice - enter one of the device IDs listed above.")
+            continue
+        # Reject output-only devices here rather than in query_devices() below.
+        if 0 <= device_id < len(devices) and devices[device_id]['max_input_channels'] > 0:
+            break
+        print(f"Invalid choice - enter 0-{len(devices) - 1} for a device with at least 1 input channel.")
 
     # Open at the device's NATIVE rate/channels (many WDM/MME devices reject
     # a forced 16 kHz -> PaErrorCode -9997), then resample to 16 kHz mono.
@@ -167,23 +203,25 @@ else:
 # All slow work lives here: buffering, HTTP/GPU inference, file writes.
 # Results are posted to result_queue; the Tk thread only updates the label.
 def transcription_worker():
+    global outfile           # cleared below if the transcript file goes away
     buffer = np.zeros(0, dtype=np.float32)
-    recent_texts = []          # normalized recent lines for overlap dedupe
+    prev_window = []           # normalized keys from the previous transcribe call
     last_silence_report = 0.0
     last_perf_report = 0.0
+    last_skip_report = 0.0
+    consecutive_errors = 0
 
-    def is_duplicate(text):
+    def normalize(text):
+        return "".join(c for c in text.lower() if c.isalnum() or c.isspace()).strip()
+
+    def is_duplicate(key):
         # Overlapping windows (--slide < --buffer) transcribe the same speech
         # twice with small wording differences; fuzzy-match instead of ==.
-        key = "".join(c for c in text.lower() if c.isalnum() or c.isspace()).strip()
-        if not key:
-            return True
-        for prev in recent_texts:
-            if difflib.SequenceMatcher(None, key, prev).ratio() > 0.80:
-                return True
-        recent_texts.append(key)
-        del recent_texts[:-5]  # keep last 5
-        return False
+        # Only the immediately previous window can overlap, so matching against
+        # a longer history just eats deliberate repeats: at 0.80, "yes" vs
+        # "yeah" scores 0.86 and would silently vanish.
+        return any(difflib.SequenceMatcher(None, key, prev).ratio() > 0.80
+                   for prev in prev_window)
 
     while not stop_event.is_set():
         try:
@@ -201,27 +239,58 @@ def transcription_worker():
         if len(buffer) < SAMPLERATE * BUFFER_LENGTH_SEC:
             continue
 
+        # Real-time catch-up, BEFORE transcribing. The drain above pulls the
+        # whole backlog into the buffer, so trimming afterwards never bounds
+        # what transcribe() actually sees: each pass would hand it 4s plus
+        # everything captured during the previous (slower) call, which feeds
+        # back on itself and grows without limit once the GPU stops keeping up.
+        max_len = SAMPLERATE * (BUFFER_LENGTH_SEC + 2 * BUFFER_SLIDE_SEC)
+        if len(buffer) > max_len:
+            behind = (len(buffer) - SAMPLERATE * BUFFER_LENGTH_SEC) / float(SAMPLERATE)
+            buffer = buffer[-SAMPLERATE * BUFFER_LENGTH_SEC:]
+            if time.monotonic() - last_skip_report > 15.0:
+                last_skip_report = time.monotonic()
+                print(f"[perf] {behind:.1f}s behind real time - skipped ahead to stay live")
+
         level = float(np.mean(np.abs(buffer)))
         if level >= SILENCE_THRESHOLD:
             t0 = time.monotonic()
             try:
                 results = backend.transcribe(buffer, translate=TRANSLATE)
+                consecutive_errors = 0
             except Exception as e:
-                print("Error:", e)
+                # A server that died mid-session fails every pass (~every
+                # --slide seconds); log the first few, then only occasionally.
+                consecutive_errors += 1
+                if consecutive_errors <= 3 or consecutive_errors % 10 == 0:
+                    print(f"Error ({consecutive_errors} in a row): {e}")
                 results = []
             infer_s = time.monotonic() - t0
             if infer_s > BUFFER_SLIDE_SEC and time.monotonic() - last_perf_report > 15.0:
                 last_perf_report = time.monotonic()
                 print(f"[perf] inference {infer_s:.1f}s per {BUFFER_LENGTH_SEC}s buffer (> slide {BUFFER_SLIDE_SEC}s) - "
-                      "GPU can't keep real-time pace with this model; try ggml-small-q5_1 "
-                      "in start_whisper_server.bat for low-latency captions")
-            for text, lang_code in results:
-                if text and not is_duplicate(text):
+                      "GPU can't keep real-time pace with this model; start the server with a "
+                      "smaller/more-quantized model (start_whisper_server.bat <model.bin>) "
+                      "for low-latency captions")
+            # Keys for every segment, including ones dropped as duplicates, so
+            # the next window still compares against the full previous window.
+            keys = [normalize(text) for text, _ in results]
+            for (text, lang_code), key in zip(results, keys):
+                if key and not is_duplicate(key):
                     print(f"[{lang_code}→EN] {text}") if TRANSLATE else print(f"[{lang_code}→{lang_code.upper()}] {text}")
                     if outfile:
-                        outfile.write(text + "\n")
-                        outfile.flush()
+                        try:
+                            outfile.write(text + "\n")
+                            outfile.flush()
+                        except OSError as e:
+                            # Disk full, or --save pointed at a removable drive
+                            # that got unplugged. This runs outside the
+                            # transcribe() try, so an unguarded raise here would
+                            # kill the worker thread outright.
+                            print(f"[save] transcript write failed, saving disabled: {e}")
+                            outfile = None
                     result_queue.put(text)
+            prev_window = keys
         else:
             # Loud feedback instead of silent skipping (throttled to every 10 s)
             now = time.monotonic()
@@ -231,15 +300,8 @@ def transcription_worker():
                       "If audio IS playing: check you picked the output device you are listening on, "
                       "raise Windows volume, or lower --silence-threshold.")
 
+        # Slide stays after transcribe so consecutive windows keep overlapping.
         buffer = buffer[int(SAMPLERATE * BUFFER_SLIDE_SEC):]
-
-        # Real-time catch-up: if inference falls behind, drop stale audio and
-        # jump to the newest window instead of letting latency grow unbounded.
-        max_len = SAMPLERATE * (BUFFER_LENGTH_SEC + 2 * BUFFER_SLIDE_SEC)
-        if len(buffer) > max_len:
-            behind = (len(buffer) - SAMPLERATE * BUFFER_LENGTH_SEC) / float(SAMPLERATE)
-            buffer = buffer[-SAMPLERATE * BUFFER_LENGTH_SEC:]
-            print(f"[perf] {behind:.1f}s behind real time - skipped ahead to stay live")
 
 worker = threading.Thread(target=transcription_worker, name="transcriber", daemon=True)
 worker.start()
@@ -298,6 +360,16 @@ if SHOW_OVERLAY:
                 text_var.set(result_queue.get_nowait())
         except queue.Empty:
             pass
+        # The worker is a daemon thread. If it ever dies, mainloop() would
+        # otherwise keep running forever showing the last caption, while the
+        # capture thread keeps filling audio_queue with nobody draining it.
+        # The console path already exits via `while worker.is_alive()`.
+        if not worker.is_alive() and not stop_event.is_set():
+            print("[worker] transcription thread stopped - closing overlay")
+            text_var.set("Transcription stopped - see console")
+            stop_event.set()
+            root.after(2000, root.destroy)
+            return
         root.after(100, poll_results)
 
 # Run overlay or console loop

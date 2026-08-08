@@ -1,8 +1,15 @@
+import sys
 import sounddevice as sd
 import numpy as np
 import queue
 
 from whisper_backends import create_backend, BackendError
+
+# Transcript lines contain characters outside cp1252 (U+2192 "->"), which a
+# redirected stdout would refuse to encode. Same guard as live_transcription.py.
+for _stream in (sys.stdout, sys.stderr):
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 # Create transcription backend
 # -------------------------------
@@ -27,11 +34,21 @@ audio_queue = queue.Queue()
 
 # Detect your Stereo Mix device
 # -------------------------------
+devices = sd.query_devices()
 print("Available audio devices:")
-for i, dev in enumerate(sd.query_devices()):
+for i, dev in enumerate(devices):
     print(i, dev['name'], "Input channels:", dev['max_input_channels'])
 
-device_id = int(input("Enter Stereo Mix device ID: "))
+while True:
+    _sel = input("Enter Stereo Mix device ID: ").strip()
+    try:
+        device_id = int(_sel)
+    except ValueError:
+        print("Invalid choice - enter one of the device IDs listed above.")
+        continue
+    if 0 <= device_id < len(devices) and devices[device_id]['max_input_channels'] > 0:
+        break
+    print(f"Invalid choice - enter 0-{len(devices) - 1} for a device with at least 1 input channel.")
 
 # Open at the device's NATIVE rate/channels (many WDM/MME devices reject
 # a forced 16 kHz -> PaErrorCode -9997), then resample to 16 kHz mono here.

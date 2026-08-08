@@ -1,0 +1,27 @@
+# Keeps editors agreeing with .gitattributes.
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+# No end_of_line here on purpose: .gitattributes uses "* text=auto", which
+# checks most files out CRLF on Windows. Declaring lf would make the editor
+# rewrite them on every save and Git rewrite them back on every checkout.
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# Windows scripts are CRLF in the working tree - see .gitattributes.
+[*.{bat,cmd,vbs,ps1}]
+end_of_line = crlf
+
+[*.py]
+max_line_length = 120
+
+# Two trailing spaces are a hard line break in Markdown.
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{yml,yaml,json}]
+indent_size = 2

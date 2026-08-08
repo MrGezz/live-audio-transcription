@@ -1,0 +1,53 @@
+# ============================================================
+#  Line endings and diff behaviour
+#
+#  Without this file, checkout line endings depend on each clone's
+#  core.autocrlf setting. This repo ships Windows scripts that cmd.exe
+#  and the Windows Script Host must read with CRLF, so pin them here
+#  rather than relying on per-machine config.
+# ============================================================
+
+# Default: normalise to LF inside the repo, let Git pick on checkout.
+* text=auto
+
+# ---- Windows scripts: MUST stay CRLF in the working tree ----
+# cmd.exe resolves "goto <label>" by byte offset, and mis-seeks in LF-only
+# files. Verified: an LF-only run_pipeline.cmd dies on the Lite path with
+#   The system cannot find the batch label specified - summary
+# while the identical bytes with CRLF run clean. The failure is offset-
+# dependent, so it appears and disappears as unrelated lines are edited.
+# Multi-line ( ) blocks and labels in general are NOT affected - don't
+# rely on those as the reason, or this pin looks droppable when it isn't.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.vbs   text eol=crlf
+*.ps1   text eol=crlf
+
+# ---- Cross-platform text ----
+*.py    text diff=python
+*.md    text diff=markdown
+*.txt   text
+*.json  text
+*.yml   text
+*.yaml  text
+.gitattributes text eol=lf
+.gitignore     text eol=lf
+.editorconfig  text eol=lf
+
+# ---- Binaries: never munge, never try to diff ----
+*.bin   binary
+*.exe   binary
+*.dll   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.wav   binary
+*.mp3   binary
+*.pt    binary
+*.onnx  binary
+
+# ---- Keep release archives lean ----
+.gitattributes  export-ignore
+.gitignore      export-ignore

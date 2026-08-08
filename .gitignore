@@ -40,21 +40,14 @@ htmlcov/
   
 # Environment variables file  
 .env 
-_models/faster-whisper-medium/
-_models/ggml-medium-q5_0.bin
-_models/ggml-small-q5_1.bin
-_whisper.cpp/bench.exe
-_whisper.cpp/ggml-base.dll
-_whisper.cpp/ggml-cpu.dll
-_whisper.cpp/ggml-vulkan.dll
-_whisper.cpp/ggml.dll
-_whisper.cpp/main.exe
-_whisper.cpp/test-vad-full.exe
-_whisper.cpp/test-vad.exe
-_whisper.cpp/whisper-bench.exe
-_whisper.cpp/whisper-cli.exe
-_whisper.cpp/whisper-quantize.exe
-_whisper.cpp/whisper-server.exe
-_whisper.cpp/whisper-vad-speech-segments.exe
-_whisper.cpp/whisper.dll
+# User-supplied model weights and whisper.cpp binaries.
+# Ignored wholesale rather than file-by-file: a single ggml model is ~250 MB,
+# well past GitHub's 100 MB per-file push limit, and listing binaries
+# individually meant any newly added .dll slipped through. Both folders are
+# documented in README.md / SETUP_AMD.md as things you download yourself.
+_models/
+_whisper.cpp/
+
+# Saved transcripts (--save; auto-named transcript_YYYYmmdd_HHMMSS.txt)
+transcript_*.txt
 my_transcript.txt
