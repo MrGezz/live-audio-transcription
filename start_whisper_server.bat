@@ -9,7 +9,8 @@ REM    _models\ggml-small-q5_1.bin      (GGML model)
 REM ============================================================
 
 set WHISPER_DIR=%~dp0_whisper.cpp
-set MODEL=%~dp0_models\ggml-small-q5_1.bin
+set MODEL=%~dp0_models\%~1
+if "%MODEL%"=="%~dp0_models\" set MODEL=%~dp0_models\ggml-small-q5_1.bin
 set HOST=127.0.0.1
 set PORT=8080
 
