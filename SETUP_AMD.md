@@ -14,6 +14,8 @@ HTTP server (`whisper-server`). The Python scripts now talk to it automatically.
 Stereo Mix ─> live_transcription.py ─ HTTP (localhost:8080) ─> whisper-server.exe (Vulkan / W5500)
                      │                                                │
                      └── CPU faster-whisper fallback if server is down┘
+                         (also if it goes down later - and back to GPU
+                          on its own when it returns)
 ```
 
 ## 1. Get a Vulkan build of whisper.cpp
@@ -42,11 +44,11 @@ live-audio-transcription\_whisper.cpp\
 
 ## 2. Download the GGML model
 
-Get `ggml-small-q8_0.bin` from
+Get `ggml-base-q5_1.bin` from
 https://huggingface.co/ggerganov/whisper.cpp/tree/main
 and place it at:
 ```
-live-audio-transcription\_models\ggml-small-q8_0.bin
+live-audio-transcription\_models\ggml-base-q5_1.bin
 ```
 That filename is what `start_whisper_server.bat` loads by default. To use a
 different model, drop it in `_models\` and pass its filename:
@@ -82,7 +84,7 @@ Backend flags added by this setup:
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--backend` | `auto` | `server` (GPU) / `local` (CPU) / `auto` |
+| `--backend` | `auto` | `server` (GPU) / `local` (CPU) / `auto` (switches between them as the server comes and goes) |
 | `--server-url` | `http://127.0.0.1:8080` | whisper-server address |
 | `--model` | `_models\faster-whisper-medium` | CPU fallback model path |
 
@@ -96,6 +98,20 @@ so there is only one place to keep current.
   2–5× faster than CPU on 4-second buffers.
 - If Vulkan fails to initialize, update the Radeon Pro driver — Vulkan 1.2+
   is required by recent whisper.cpp builds.
+- **If `whisper-server` exits silently** right after `using ... backend`, with
+  no error of its own, check the exit code: `0xC000001D` is
+  STATUS_ILLEGAL_INSTRUCTION, meaning the prebuilt binaries were compiled for
+  CPU instructions your machine does not have (commonly AVX-512 — absent on
+  most mobile Intel chips). Confirm it by adding `-ng`: if it still dies with
+  the GPU disabled, it is the CPU build target, not Vulkan. The model loads
+  first regardless, because loading is plain code and the fault happens on the
+  first compute kernel. Fix by building from source on that machine
+  (Option B above — CMake targets the host CPU) or finding a build that
+  matches it. `start_whisper_server.bat` detects this case and says so.
 - `pip install -r requirements.txt` (adds `requests`).
 - Language auto-detect and per-request `--translate` are passed through to the
   server; no server restart needed to toggle translation.
+- You can close and restart the server window without restarting transcription:
+  on `--backend auto` the script falls back to CPU after ~10 s of failures and
+  picks the server back up within a minute of it returning. One log line each
+  way. Use `--backend server` if you would rather it fail loudly instead.

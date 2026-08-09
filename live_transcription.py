@@ -32,7 +32,8 @@ parser.add_argument("--buffer", type=int, default=4, help="Rolling buffer length
 parser.add_argument("--slide", type=int, default=2, help="Sliding step in seconds")
 parser.add_argument("--no-overlay", action="store_true", help="Disable live overlay window")
 parser.add_argument("--backend", type=str, default="auto", choices=["auto", "server", "local"],
-                    help="Transcription backend: whisper.cpp server (GPU/Vulkan), local CPU faster-whisper, or auto")
+                    help="Transcription backend: server (whisper.cpp GPU/Vulkan), local (CPU faster-whisper), "
+                         "or auto - server when it is up, CPU while it is not, switching either way on its own")
 parser.add_argument("--server-url", type=str, default="http://127.0.0.1:8080",
                     help="whisper-server URL (see start_whisper_server.bat)")
 parser.add_argument("--model", type=str, default=r"_models\faster-whisper-medium",
@@ -268,10 +269,19 @@ def transcription_worker():
             infer_s = time.monotonic() - t0
             if infer_s > BUFFER_SLIDE_SEC and time.monotonic() - last_perf_report > 15.0:
                 last_perf_report = time.monotonic()
-                print(f"[perf] inference {infer_s:.1f}s per {BUFFER_LENGTH_SEC}s buffer (> slide {BUFFER_SLIDE_SEC}s) - "
-                      "GPU can't keep real-time pace with this model; start the server with a "
-                      "smaller/more-quantized model (start_whisper_server.bat <model.bin>) "
-                      "for low-latency captions")
+                # Ask which backend is actually serving. On --backend auto that
+                # changes mid-session, and naming the wrong one sends people to
+                # tune a server that is not even running.
+                lag = (f"[perf] inference {infer_s:.1f}s per {BUFFER_LENGTH_SEC}s buffer "
+                       f"(> slide {BUFFER_SLIDE_SEC}s) - ")
+                if backend.active_name == "server":
+                    print(lag + "the GPU can't keep real-time pace with this model; restart the "
+                                "server with a smaller/more-quantized model "
+                                "(start_whisper_server.bat <model.bin>) for low-latency captions")
+                else:
+                    print(lag + "this is the CPU fallback, which is expected to lag. Start the GPU "
+                                "server (start_whisper_server.bat) to get back to real time, or "
+                                "point --model at a smaller faster-whisper model")
             # Keys for every segment, including ones dropped as duplicates, so
             # the next window still compares against the full previous window.
             keys = [normalize(text) for text, _ in results]

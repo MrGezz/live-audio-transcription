@@ -2,10 +2,10 @@
 
 This project transcribes **system audio in real-time** and displays it in a **modern, draggable overlay**, with optional translation to English and transcript saving.
 
-This fork adds **AMD GPU support** (e.g. Radeon Pro W5500) via a pluggable backend system:
+This also adds **AMD GPU support** (e.g. Radeon Pro W5500) via a pluggable backend system:
 
 - **GPU backend** — [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-server` with the **Vulkan** backend, reached over local HTTP. Works on AMD, Intel, and NVIDIA GPUs — no CUDA or ROCm required.
-- **CPU backend** — [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) (`int8`), used as an automatic fallback when the server is not running.
+- **CPU backend** — [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) (`int8`), used as an automatic fallback when the server is not running — including when it stops running *mid-session*.
 
 > **Why?** Faster-Whisper is built on CTranslate2, which supports NVIDIA CUDA or CPU only. On AMD cards the old `device="cuda"` call silently fell back to CPU. The Vulkan path gives AMD cards real GPU acceleration.
 
@@ -16,14 +16,14 @@ This fork adds **AMD GPU support** (e.g. Radeon Pro W5500) via a pluggable backe
 ```
 Stereo Mix ──> live_transcription.py ── HTTP (localhost:8080) ──> whisper-server.exe (Vulkan GPU)
                       │                                                   │
-                      └────── CPU faster-whisper fallback if server is down
+                      └────── CPU faster-whisper fallback if the server is down, or goes down
 ```
 
 ## Features
 
 - Live transcription of system audio via **WASAPI loopback of any output device** (headset, speakers - no Stereo Mix needed), or classic Stereo Mix / mic input (`--capture input`).
 - **GPU acceleration on AMD/Intel/NVIDIA via whisper.cpp Vulkan** (`--backend server`).
-- Automatic backend selection with CPU fallback (`--backend auto`, default).
+- Automatic backend selection with CPU fallback (`--backend auto`, default) — if the GPU server dies mid-session it drops to CPU rather than going silent, and returns to GPU on its own once the server is back.
 - Optional translation to English (`--translate`) — passed per-request, no server restart needed.
 - Live overlay at the bottom center of the screen; transparent and draggable.
 - Optional transcript saving (`--save` and `--output`).
@@ -60,7 +60,7 @@ pip install -r requirements.txt
 
 4. **Set up the GPU backend (recommended, AMD-friendly)** — see [SETUP_AMD.md](SETUP_AMD.md) for full details:
    - Place a Vulkan build of whisper.cpp (with `whisper-server.exe` and its DLLs) under `_whisper.cpp\`
-   - Download [`ggml-small-q8_0.bin`](https://huggingface.co/ggerganov/whisper.cpp/tree/main) into `_models\` — this is the filename `start_whisper_server.bat` looks for by default. Any other GGML model works too; pass its filename as an argument: `start_whisper_server.bat ggml-medium-q5_0.bin`
+   - Download [`ggml-base-q5_1.bin`](https://huggingface.co/ggerganov/whisper.cpp/tree/main) into `_models\` — this is the filename `start_whisper_server.bat` looks for by default. Any other GGML model works too; pass its filename as an argument: `start_whisper_server.bat ggml-medium-q5_0.bin`
 
 5. **Set up the CPU fallback (optional)**
    - Place the Faster-Whisper medium model under `_models/faster-whisper-medium`
@@ -132,7 +132,7 @@ python live_transcription_lite.py
 | `--save` | off | Write the transcript to a text file |
 | `--output` | auto-named | Transcript path; with `--save` and no name, defaults to `transcript_YYYYmmdd_HHMMSS.txt` |
 | `--no-overlay` | off | Console-only; skip the on-screen overlay |
-| `--backend` | `auto` | `server` (GPU) / `local` (CPU) / `auto` (server, then CPU fallback) |
+| `--backend` | `auto` | `server` (GPU) / `local` (CPU) / `auto` (server, with automatic CPU fallback and recovery — see [Notes](#notes)) |
 | `--server-url` | `http://127.0.0.1:8080` | whisper-server address |
 | `--model` | `_models\faster-whisper-medium` | Faster-Whisper model path (CPU backend only) |
 | `--buffer` | `4` | Rolling buffer length in seconds — how much audio each transcription pass sees |
@@ -141,6 +141,7 @@ python live_transcription_lite.py
 
 ## Notes
 
+- **`--backend auto` recovers on its own.** If the GPU server stops answering, the script keeps trying for 5 consecutive passes (~10 s) — a single dropped request is a hiccup, not a dead server — then loads the CPU model and carries on, printing one line. While on CPU it re-checks the server once a minute with a 3-second probe and switches back on the first answer, again one line. The CPU model is only ever loaded the moment it is actually needed, so a session that never loses its server pays nothing for this. `--backend server` and `--backend local` are left alone; they mean what they say.
 - Default capture is **WASAPI loopback**: pick the output device you are *listening* on (Enter = Windows default). Whatever plays through it gets transcribed - no Stereo Mix required. Stereo Mix only matters for `--capture input`, and it only hears the Realtek output.
 - Overlay defaults to **center-bottom of the screen**.
 - Use `Ctrl+C` in the console to stop transcription.
@@ -162,13 +163,13 @@ project/
 ├─ README.md
 ├─ _whisper.cpp/                 # whisper.cpp Vulkan binaries (whisper-server.exe + DLLs)
 └─ _models/
-   ├─ ggml-small-q8_0.bin        # GGML model for whisper-server (GPU), default
+   ├─ ggml-base-q5_1.bin        # GGML model for whisper-server (GPU), default
    └─ faster-whisper-medium/     # Faster-Whisper model (CPU fallback)
 ```
 
 ## Models
 
-- **GPU (whisper-server):** `ggml-small-q8_0.bin` from [ggerganov/whisper.cpp on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main) is the default. Other sizes work too (`medium`, `large-v3-turbo`, ...) — drop the file in `_models\` and pass its filename: `start_whisper_server.bat ggml-medium-q5_0.bin`. Smaller/more-quantized models transcribe faster, which matters: if inference takes longer than `--slide`, the script starts skipping audio to stay live.
+- **GPU (whisper-server):** `ggml-base-q5_1.bin` from [ggerganov/whisper.cpp on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main) is the default. Other sizes work too (`medium`, `large-v3-turbo`, ...) — drop the file in `_models\` and pass its filename: `start_whisper_server.bat ggml-medium-q5_0.bin`. Smaller/more-quantized models transcribe faster, which matters: if inference takes longer than `--slide`, the script starts skipping audio to stay live.
 - **CPU (Faster-Whisper):** medium model recommended (`int8`). Path configurable via `--model`.
 
 ## Useful Links

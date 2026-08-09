@@ -107,7 +107,15 @@ try:
                 continue
 
             # Transcribe current buffer (translate to English automatically)
-            results = backend.transcribe(buffer, translate=True)
+            try:
+                results = backend.transcribe(buffer, translate=True)
+            except Exception as e:
+                # The auto backend re-raises the first few failures on purpose,
+                # so it can tell a hiccup from a dead server. Dying here would
+                # mean the CPU fallback never gets a chance to engage; it logs
+                # the switch itself once it does.
+                print("Error: {0}".format(e))
+                results = []
             for text, lang in results:
                 if text:
                     print(f"[{lang}→EN] {text}")

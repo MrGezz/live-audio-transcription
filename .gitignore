@@ -47,6 +47,7 @@ htmlcov/
 # documented in README.md / SETUP_AMD.md as things you download yourself.
 _models/
 _whisper.cpp/
+_whisper.cpp.bck/
 
 # Saved transcripts (--save; auto-named transcript_YYYYmmdd_HHMMSS.txt)
 transcript_*.txt
