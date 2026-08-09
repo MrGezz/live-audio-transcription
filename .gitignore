@@ -38,5 +38,10 @@ __pycache__/
 .coverage.*  
 htmlcov/  
   
-# Environment variables file  
-.env 
+# Environment variables file
+.env
+
+# Local runtime artifacts (never committed)
+_models/
+_whisper.cpp/
+_whisper.cpp.bck/
