@@ -178,3 +178,11 @@ project/
 - [whisper.cpp Windows Vulkan prebuilt binaries](https://github.com/jerryshell/whisper.cpp-windows-vulkan-bin)
 - [Faster-Whisper GitHub](https://github.com/SYSTRAN/faster-whisper)
 - [Python Documentation](https://docs.python.org/3/)
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
