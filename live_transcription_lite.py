@@ -13,7 +13,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 # Create transcription backend
 # -------------------------------
-# auto: whisper.cpp server (Vulkan GPU, works on AMD) -> CPU faster-whisper fallback
+# auto: whisper.cpp server (GPU: Vulkan or CUDA build) -> CPU faster-whisper fallback
 try:
     backend = create_backend("auto",
                              server_url="http://127.0.0.1:8080",

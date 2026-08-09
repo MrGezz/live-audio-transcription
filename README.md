@@ -2,19 +2,19 @@
 
 This project transcribes **system audio in real-time** and displays it in a **modern, draggable overlay**, with optional translation to English and transcript saving.
 
-This also adds **AMD GPU support** (e.g. Radeon Pro W5500) via a pluggable backend system:
+This also adds **GPU support via whisper.cpp** — Vulkan for AMD/Intel, CUDA for NVIDIA — behind a pluggable backend system:
 
-- **GPU backend** — [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-server` with the **Vulkan** backend, reached over local HTTP. Works on AMD, Intel, and NVIDIA GPUs — no CUDA or ROCm required.
+- **GPU backend** — [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-server` (Vulkan or CUDA build), reached over local HTTP. Vulkan works on AMD, Intel, and NVIDIA; a CUDA build is the stronger choice on NVIDIA.
 - **CPU backend** — [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) (`int8`), used as an automatic fallback when the server is not running — including when it stops running *mid-session*.
 
-> **Why?** Faster-Whisper is built on CTranslate2, which supports NVIDIA CUDA or CPU only. On AMD cards the old `device="cuda"` call silently fell back to CPU. The Vulkan path gives AMD cards real GPU acceleration.
+> **Why?** Faster-Whisper is built on CTranslate2, which supports NVIDIA CUDA or CPU only. On AMD cards the old `device="cuda"` call silently fell back to CPU. The Vulkan path gives AMD cards real GPU acceleration. NVIDIA users can instead drop a CUDA build into `_whisper.cpp\` — the app does not care which build the server was compiled with.
 
 ![Sample Image](sample.png)
 
 ## Architecture
 
 ```
-Stereo Mix ──> live_transcription.py ── HTTP (localhost:8080) ──> whisper-server.exe (Vulkan GPU)
+Stereo Mix ──> live_transcription.py ── HTTP (localhost:8080) ──> whisper-server.exe (Vulkan/CUDA GPU)
                       │                                                   │
                       └────── CPU faster-whisper fallback if the server is down, or goes down
 ```
@@ -22,7 +22,7 @@ Stereo Mix ──> live_transcription.py ── HTTP (localhost:8080) ──> wh
 ## Features
 
 - Live transcription of system audio via **WASAPI loopback of any output device** (headset, speakers - no Stereo Mix needed), or classic Stereo Mix / mic input (`--capture input`).
-- **GPU acceleration on AMD/Intel/NVIDIA via whisper.cpp Vulkan** (`--backend server`).
+- **GPU acceleration via whisper.cpp** — Vulkan (AMD/Intel) or CUDA (NVIDIA) — (`--backend server`).
 - Automatic backend selection with CPU fallback (`--backend auto`, default) — if the GPU server dies mid-session it drops to CPU rather than going silent, and returns to GPU on its own once the server is back.
 - Optional translation to English (`--translate`) — passed per-request, no server restart needed.
 - Live overlay at the bottom center of the screen; transparent and draggable.
@@ -32,7 +32,7 @@ Stereo Mix ──> live_transcription.py ── HTTP (localhost:8080) ──> wh
 ## Requirements
 
 - Python 3.10+
-- For GPU: a Vulkan-capable GPU (tested target: AMD Radeon Pro W5500) + a Vulkan build of whisper.cpp
+- For GPU: a Vulkan-capable GPU (AMD/Intel; tested target: Radeon Pro W5500), or an NVIDIA GPU with a CUDA build of whisper.cpp
 - For CPU fallback: the Faster-Whisper model folder
 
 ## Installation
@@ -59,7 +59,7 @@ pip install -r requirements.txt
 > The venv is still required — the scripts need `numpy`, `sounddevice`, `soundcard`, and `requests` regardless of backend. `faster-whisper` is only imported by the CPU fallback; you may skip it for a server-only setup.
 
 4. **Set up the GPU backend (recommended, AMD-friendly)** — see [SETUP_AMD.md](SETUP_AMD.md) for full details:
-   - Place a Vulkan build of whisper.cpp (with `whisper-server.exe` and its DLLs) under `_whisper.cpp\`
+   - Place a whisper.cpp build — Vulkan (AMD/Intel) or CUDA (NVIDIA) — with `whisper-server.exe` and its DLLs under `_whisper.cpp\`
    - Download [`ggml-base-q5_1.bin`](https://huggingface.co/ggerganov/whisper.cpp/tree/main) into `_models\` — this is the filename `start_whisper_server.bat` looks for by default. Any other GGML model works too; pass its filename as an argument: `start_whisper_server.bat ggml-medium-q5_0.bin`
 
 5. **Set up the CPU fallback (optional)**
@@ -70,7 +70,7 @@ pip install -r requirements.txt
 start_whisper_server.bat
 python live_transcription.py
 ```
-The server startup log should list your GPU as a Vulkan device (e.g. `ggml_vulkan: 0 = AMD Radeon Pro W5500`). Leave that window running.
+The server startup log should list your GPU as a Vulkan device (e.g. `ggml_vulkan: 0 = ...`) or, on a CUDA build, `ggml_cuda_init: found N CUDA devices`. Leave that window running.
 
 > **Prefer a guided setup?** Double-click `Start Transcription.vbs` (or run `run_pipeline.cmd`). It asks which script, capture mode and flags you want, then creates the venv, installs requirements, and starts the server for you.
 
@@ -155,13 +155,13 @@ project/
 ├─ live_transcription.py         # Main script with overlay and optional saving
 ├─ live_transcription_lite.py    # Console-only version
 ├─ whisper_backends.py           # Backend abstraction: whisper-server (GPU) / faster-whisper (CPU)
-├─ start_whisper_server.bat      # Launches whisper.cpp Vulkan server
+├─ start_whisper_server.bat      # Launches whisper.cpp GPU server (Vulkan/CUDA)
 ├─ run_pipeline.cmd              # Guided launcher: venv + server + script, with prompts
 ├─ Start Transcription.vbs       # Double-click shortcut for run_pipeline.cmd
-├─ SETUP_AMD.md                  # AMD GPU setup walkthrough
+├─ SETUP_AMD.md                  # AMD GPU setup walkthrough (CUDA note for NVIDIA inside)
 ├─ requirements.txt
 ├─ README.md
-├─ _whisper.cpp/                 # whisper.cpp Vulkan binaries (whisper-server.exe + DLLs)
+├─ _whisper.cpp/                 # whisper.cpp binaries (Vulkan or CUDA build)
 └─ _models/
    ├─ ggml-base-q5_1.bin        # GGML model for whisper-server (GPU), default
    └─ faster-whisper-medium/     # Faster-Whisper model (CPU fallback)
@@ -176,6 +176,7 @@ project/
 
 - [whisper.cpp GitHub](https://github.com/ggml-org/whisper.cpp)
 - [whisper.cpp Windows Vulkan prebuilt binaries](https://github.com/jerryshell/whisper.cpp-windows-vulkan-bin)
+- [whisper.cpp official releases (CUDA/cuBLAS prebuilt zips)](https://github.com/ggml-org/whisper.cpp/releases)
 - [Faster-Whisper GitHub](https://github.com/SYSTRAN/faster-whisper)
 - [Python Documentation](https://docs.python.org/3/)
 

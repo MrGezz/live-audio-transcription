@@ -8,10 +8,16 @@ old `device="cuda"` call was silently falling back to CPU.
 The working GPU path on AMD is **whisper.cpp with the Vulkan backend**, run as a local
 HTTP server (`whisper-server`). The Python scripts now talk to it automatically.
 
+> **NVIDIA users:** you don't need the Vulkan-specific steps below. Grab a **CUDA build**
+> of whisper.cpp instead — the official [releases](https://github.com/ggml-org/whisper.cpp/releases)
+> ship `whisper-cublas` zips — drop `whisper-server.exe` + DLLs into `_whisper.cpp\`, and
+> use `start_whisper_server.bat <model>` exactly as described. The app and launcher are
+> backend-agnostic; only the build you place in `_whisper.cpp\` differs.
+
 ## Architecture
 
 ```
-Stereo Mix ─> live_transcription.py ─ HTTP (localhost:8080) ─> whisper-server.exe (Vulkan / W5500)
+Stereo Mix ─> live_transcription.py ─ HTTP (localhost:8080) ─> whisper-server.exe (Vulkan or CUDA)
                      │                                                │
                      └── CPU faster-whisper fallback if server is down┘
                          (also if it goes down later - and back to GPU

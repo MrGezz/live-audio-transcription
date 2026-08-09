@@ -32,7 +32,7 @@ parser.add_argument("--buffer", type=int, default=4, help="Rolling buffer length
 parser.add_argument("--slide", type=int, default=2, help="Sliding step in seconds")
 parser.add_argument("--no-overlay", action="store_true", help="Disable live overlay window")
 parser.add_argument("--backend", type=str, default="auto", choices=["auto", "server", "local"],
-                    help="Transcription backend: server (whisper.cpp GPU/Vulkan), local (CPU faster-whisper), "
+                    help="Transcription backend: server (whisper.cpp GPU), local (CPU faster-whisper), "
                          "or auto - server when it is up, CPU while it is not, switching either way on its own")
 parser.add_argument("--server-url", type=str, default="http://127.0.0.1:8080",
                     help="whisper-server URL (see start_whisper_server.bat)")
@@ -62,7 +62,7 @@ if outfile:
 
 # Create transcription backend
 # -------------------------------
-# GPU path: whisper.cpp whisper-server with Vulkan (AMD Radeon Pro W5500 etc.)
+# GPU path: whisper.cpp whisper-server (Vulkan or CUDA build)
 # CPU path: faster-whisper int8 fallback
 try:
     backend = create_backend(args.backend, server_url=args.server_url, model_path=args.model)

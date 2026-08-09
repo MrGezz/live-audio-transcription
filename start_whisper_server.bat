@@ -1,10 +1,10 @@
 @echo off
 REM ============================================================
-REM  Start whisper.cpp whisper-server with Vulkan GPU support
-REM  (AMD Radeon Pro W5500 friendly - no CUDA/ROCm required)
+REM  Start whisper.cpp whisper-server (Vulkan or CUDA build)
+REM  (AMD/Intel -> Vulkan; NVIDIA -> CUDA. The app is backend-agnostic.)
 REM
 REM  Expected layout (see SETUP_AMD.md):
-REM    _whisper.cpp\whisper-server.exe   (Vulkan build + DLLs)
+REM    _whisper.cpp\whisper-server.exe   (Vulkan or CUDA build + DLLs)
 REM    _models\ggml-base-q5_1.bin      (GGML model)
 REM ============================================================
 
@@ -22,7 +22,7 @@ REM  C:\Program Files (x86)\... would close the block early and abort the
 REM  entire script with "was unexpected at this time" before it runs.
 if not exist "%WHISPER_DIR%\whisper-server.exe" (
     echo [ERROR] whisper-server.exe not found in "%WHISPER_DIR%"
-    echo         Download a Vulkan build of whisper.cpp - see SETUP_AMD.md
+    echo         Download a Vulkan or CUDA build of whisper.cpp - see SETUP_AMD.md
     pause
     exit /b 1
 )
@@ -38,7 +38,7 @@ if not exist "%MODEL%" (
 
 echo Starting whisper-server on http://%HOST%:%PORT% ...
 echo Model: %MODEL%
-echo (Watch the startup log: it should list your AMD GPU as a Vulkan device)
+echo (Watch the startup log: it should list your GPU as a Vulkan or CUDA device)
 echo.
 
 "%WHISPER_DIR%\whisper-server.exe" -m "%MODEL%" --host %HOST% --port %PORT% -l auto

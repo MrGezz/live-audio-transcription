@@ -3,9 +3,9 @@ Transcription backends for live-audio-transcription.
 
 Interchangeable backends behind one transcribe(buffer, translate) interface:
 
-  ServerBackend  -> whisper.cpp `whisper-server` over HTTP (Vulkan GPU:
-                    works on AMD cards such as the Radeon Pro W5500,
-                    where CUDA/ROCm are unavailable).
+  ServerBackend  -> whisper.cpp `whisper-server` over HTTP (GPU; the server
+                    can be a Vulkan build for AMD/Intel or a CUDA build for
+                    NVIDIA - this layer does not care which).
   LocalBackend   -> faster-whisper on CPU (int8). Fallback / no server.
   AutoBackend    -> both of the above: runs on the server, drops to CPU if it
                     dies mid-session, and returns to the server when it comes
@@ -35,10 +35,10 @@ class BackendError(RuntimeError):
 
 
 # -------------------------------
-# whisper.cpp server backend (GPU via Vulkan)
+# whisper.cpp server backend (GPU: Vulkan or CUDA build)
 # -------------------------------
 class ServerBackend(object):
-    name = "whisper.cpp server (Vulkan GPU)"
+    name = "whisper.cpp server (GPU)"
     active_name = "server"      # see AutoBackend.active_name
 
     def __init__(self, url="http://127.0.0.1:8080", timeout=30, check=True):
