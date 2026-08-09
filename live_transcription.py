@@ -10,6 +10,7 @@ import tkinter as tk
 from datetime import datetime
 
 from whisper_backends import create_backend, BackendError
+from speech_gate import SpeechGate
 
 # Console encoding
 # -------------------------------
@@ -26,6 +27,10 @@ for _stream in (sys.stdout, sys.stderr):
 # -------------------------------
 parser = argparse.ArgumentParser(description="Live system audio transcription with optional overlay")
 parser.add_argument("--translate", action="store_true", help="Translate to English")
+parser.add_argument("--language", type=str, default="auto",
+                    help="Spoken language as a Whisper code (en, ms, ja, ...), or auto (default) "
+                         "to detect it on every buffer. Pin it when you know it: detection reruns "
+                         "per buffer and can disagree with itself on short or noisy windows")
 parser.add_argument("--save", action="store_true", help="Save transcript to text file")
 parser.add_argument("--output", type=str, default=None, help="Output text file path")
 parser.add_argument("--buffer", type=int, default=4, help="Rolling buffer length in seconds")
@@ -40,6 +45,25 @@ parser.add_argument("--model", type=str, default=r"_models\faster-whisper-medium
                     help="faster-whisper model path (local/CPU backend only)")
 parser.add_argument("--silence-threshold", type=float, default=0.01,
                     help="Mean-abs level below which a buffer is skipped as silence (default 0.01)")
+parser.add_argument("--no-vad", action="store_true",
+                    help="Disable Silero voice-activity detection and gate on loudness alone. "
+                         "Loud non-speech (fans, music) then reaches Whisper, which invents "
+                         "text for it")
+parser.add_argument("--vad-threshold", type=float, default=0.5,
+                    help="Silero speech probability above which a 32 ms frame counts as "
+                         "speech (default 0.5; lower catches quieter speech and more noise). "
+                         "For singing, lower --vad-min-speech-ms instead - see its help")
+parser.add_argument("--vad-min-speech-ms", type=float, default=250,
+                    help="How much speech a buffer needs before it is transcribed "
+                         "(default 250 ms = 8 frames). Lower this for sung vocals: at the "
+                         "default threshold, measured over 4 s windows, speech scores 35-97 "
+                         "frames and singing only 0-15, while fans and room tone score exactly "
+                         "0 - so 60 catches most singing and still cannot let steady noise "
+                         "through. Lowering --vad-threshold does NOT work here; it admits room "
+                         "tone at about the same point it admits music")
+parser.add_argument("--vad-model", type=str, default=None,
+                    help="Path to a silero_vad*.onnx. Defaults to the one bundled with "
+                         "faster-whisper")
 parser.add_argument("--capture", type=str, default="loopback", choices=["loopback", "input"],
                     help="loopback: WASAPI-capture any OUTPUT device (headset, speakers - no Stereo Mix needed). "
                          "input: classic recording device (Stereo Mix / microphone)")
@@ -65,9 +89,26 @@ if outfile:
 # GPU path: whisper.cpp whisper-server (Vulkan or CUDA build)
 # CPU path: faster-whisper int8 fallback
 try:
-    backend = create_backend(args.backend, server_url=args.server_url, model_path=args.model)
+    backend = create_backend(args.backend, server_url=args.server_url, model_path=args.model,
+                             language=args.language)
 except BackendError as e:
     raise SystemExit(f"Backend error: {e}")
+
+# Speech gate
+# -------------------------------
+# Built once, used by the worker. create() returns None (with one line saying
+# why) when onnxruntime or the model is missing, and the worker falls back to
+# the loudness threshold - a server-only install without faster-whisper still
+# runs, just without the VAD.
+speech_gate = None
+if not args.no_vad:
+    speech_gate = SpeechGate.create(model_path=args.vad_model,
+                                    threshold=args.vad_threshold,
+                                    min_speech_ms=args.vad_min_speech_ms)
+    if speech_gate is not None:
+        print(f"Speech gate: Silero VAD (threshold {speech_gate.threshold}, "
+              f"needs {speech_gate.min_frames} frames = "
+              f"{args.vad_min_speech_ms:.0f} ms of speech)")
 
 
 # Audio plumbing
@@ -78,7 +119,7 @@ result_queue = queue.Queue()  # worker -> UI thread (only the UI thread touches 
 stop_event = threading.Event()
 
 def enqueue_audio(data, src_rate):
-    """Downmix to mono, resample to 16 kHz, normalize, and queue. data: (frames,) or (frames, channels)."""
+    """Downmix to mono, resample to 16 kHz, and queue. data: (frames,) or (frames, channels)."""
     if data.ndim > 1 and data.shape[1] > 1:
         audio = data.mean(axis=1)
     else:
@@ -90,11 +131,14 @@ def enqueue_audio(data, src_rate):
             np.arange(len(audio)),
             audio,
         )
-    audio = audio.astype(np.float32)
-    max_amp = np.max(np.abs(audio))
-    if max_amp > 0.02:
-        audio = audio / max_amp
-    audio_queue.put(audio)
+    # Deliberately NOT normalized here. Scaling every ~128 ms chunk to full
+    # scale destroys the only evidence --silence-threshold and the VAD have to
+    # work with: quiet room tone measures 0.0064 raw - below the threshold, so
+    # it should be skipped - and 0.2214 once normalized, which is
+    # indistinguishable from speech at 0.2279. It is also a crude per-chunk
+    # AGC that pumps the gain around inside a single word. The window is
+    # normalized once instead, in the worker, right before inference.
+    audio_queue.put(audio.astype(np.float32))
 
 # Capture: WASAPI loopback (default) or classic input device
 # -------------------------------
@@ -253,11 +297,34 @@ def transcription_worker():
                 last_skip_report = time.monotonic()
                 print(f"[perf] {behind:.1f}s behind real time - skipped ahead to stay live")
 
+        # Two-stage gate, cheapest test first. The level check rejects true
+        # silence for free; the VAD then rejects audio that is loud but not
+        # speech - fans, music, keyboard, room tone - which is exactly what
+        # Whisper invents text over. Both reject before any inference is paid
+        # for, so a quiet room costs nothing instead of a full pass plus a
+        # hallucinated caption.
+        # speech_frames() rather than has_speech() only so the skip message can
+        # report how far short the buffer fell - it is the same single pass, and
+        # "6 of the 8 frames needed" tells you what to set --vad-min-speech-ms
+        # to, where a bare "no speech detected" leaves you guessing.
         level = float(np.mean(np.abs(buffer)))
-        if level >= SILENCE_THRESHOLD:
+        frames = None
+        if level < SILENCE_THRESHOLD:
+            skip = "silence"
+        elif speech_gate is not None:
+            frames = speech_gate.speech_frames(buffer)
+            skip = "no-speech" if frames < speech_gate.min_frames else None
+        else:
+            skip = None
+
+        if skip is None:
+            # Normalized once, for the whole window, instead of per chunk on
+            # the way in - see enqueue_audio().
+            peak = float(np.max(np.abs(buffer)))
+            audio = buffer / peak if peak > 0.02 else buffer
             t0 = time.monotonic()
             try:
-                results = backend.transcribe(buffer, translate=TRANSLATE)
+                results = backend.transcribe(audio, translate=TRANSLATE)
                 consecutive_errors = 0
             except Exception as e:
                 # A server that died mid-session fails every pass (~every
@@ -302,13 +369,32 @@ def transcription_worker():
                     result_queue.put(text)
             prev_window = keys
         else:
-            # Loud feedback instead of silent skipping (throttled to every 10 s)
+            # Loud feedback instead of silent skipping (throttled to every 10 s).
+            # The two reasons need opposite advice: "too quiet" means the capture
+            # is wrong, "audible but not speech" usually means it is working.
             now = time.monotonic()
             if now - last_silence_report > 10.0:
                 last_silence_report = now
-                print(f"[audio] level {level:.5f} < threshold {SILENCE_THRESHOLD} — capturing silence. "
-                      "If audio IS playing: check you picked the output device you are listening on, "
-                      "raise Windows volume, or lower --silence-threshold.")
+                if skip == "silence":
+                    print(f"[audio] level {level:.5f} < threshold {SILENCE_THRESHOLD} — capturing silence. "
+                          "If audio IS playing: check you picked the output device you are listening on, "
+                          "raise Windows volume, or lower --silence-threshold.")
+                elif frames == 0:
+                    # Nothing in the window cleared the threshold at all, so
+                    # asking for fewer frames cannot help - there are none to
+                    # ask for. Instrumental passages and steady noise land here.
+                    print(f"[audio] audible (level {level:.5f}) but Silero found no speech at "
+                          "all — skipping. Loosening --vad-min-speech-ms cannot help, since "
+                          "there is no frame to count. Use --no-vad to transcribe it anyway "
+                          "(instrumentals, heavily processed vocals), or lower --vad-threshold "
+                          "if you believe there is quiet speech in there.")
+                else:
+                    print(f"[audio] audible (level {level:.5f}) but only {frames} of the "
+                          f"{speech_gate.min_frames} speech frames needed — skipping. "
+                          f"Sung vocals score far below speech; try --vad-min-speech-ms "
+                          f"{int(frames * 32)} — not --vad-threshold, which lets room tone in "
+                          "at about the same point it lets music in. --no-vad disables the "
+                          "check entirely.")
 
         # Slide stays after transcribe so consecutive windows keep overlapping.
         buffer = buffer[int(SAMPLERATE * BUFFER_SLIDE_SEC):]
