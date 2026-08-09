@@ -14,7 +14,8 @@ Interchangeable backends behind one transcribe(buffer, translate) interface:
 Usage:
     from whisper_backends import create_backend
     backend = create_backend("auto", server_url="http://127.0.0.1:8080",
-                             model_path=r"_models\faster-whisper-medium")
+                             model_path=r"_models\faster-whisper-medium",
+                             language="auto")
     results = backend.transcribe(float32_mono_16k_buffer, translate=False)
     for text, lang in results:
         ...
@@ -29,9 +30,92 @@ import numpy as np
 
 SAMPLERATE = 16000
 
+# Whisper's fixed language set (openai/whisper tokenizer LANGUAGES, plus the
+# large-v3 "yue"), as code -> full name.
+#
+# Kept as a mapping rather than a bare set because the two backends speak
+# different halves of it. Codes are what everything accepts as INPUT:
+# whisper.cpp also tolerates full names, faster-whisper accepts codes only and
+# raises ValueError otherwise, so an unvalidated "--language english" would run
+# on the GPU and then kill transcription the moment the server died and the CPU
+# fallback engaged. Names are what whisper-server hands back as OUTPUT, where
+# faster-whisper hands back a code - so captions would read [english] on GPU
+# and [en] on CPU for the same audio. The reverse map below settles that.
+WHISPER_LANGUAGES = {
+    "en": "english", "zh": "chinese", "de": "german", "es": "spanish",
+    "ru": "russian", "ko": "korean", "fr": "french", "ja": "japanese",
+    "pt": "portuguese", "tr": "turkish", "pl": "polish", "ca": "catalan",
+    "nl": "dutch", "ar": "arabic", "sv": "swedish", "it": "italian",
+    "id": "indonesian", "hi": "hindi", "fi": "finnish", "vi": "vietnamese",
+    "he": "hebrew", "uk": "ukrainian", "el": "greek", "ms": "malay",
+    "cs": "czech", "ro": "romanian", "da": "danish", "hu": "hungarian",
+    "ta": "tamil", "no": "norwegian", "th": "thai", "ur": "urdu",
+    "hr": "croatian", "bg": "bulgarian", "lt": "lithuanian", "la": "latin",
+    "mi": "maori", "ml": "malayalam", "cy": "welsh", "sk": "slovak",
+    "te": "telugu", "fa": "persian", "lv": "latvian", "bn": "bengali",
+    "sr": "serbian", "az": "azerbaijani", "sl": "slovenian", "kn": "kannada",
+    "et": "estonian", "mk": "macedonian", "br": "breton", "eu": "basque",
+    "is": "icelandic", "hy": "armenian", "ne": "nepali", "mn": "mongolian",
+    "bs": "bosnian", "kk": "kazakh", "sq": "albanian", "sw": "swahili",
+    "gl": "galician", "mr": "marathi", "pa": "punjabi", "si": "sinhala",
+    "km": "khmer", "sn": "shona", "yo": "yoruba", "so": "somali",
+    "af": "afrikaans", "oc": "occitan", "ka": "georgian", "be": "belarusian",
+    "tg": "tajik", "sd": "sindhi", "gu": "gujarati", "am": "amharic",
+    "yi": "yiddish", "lo": "lao", "uz": "uzbek", "fo": "faroese",
+    "ht": "haitian creole", "ps": "pashto", "tk": "turkmen", "nn": "nynorsk",
+    "mt": "maltese", "sa": "sanskrit", "lb": "luxembourgish", "my": "myanmar",
+    "bo": "tibetan", "tl": "tagalog", "mg": "malagasy", "as": "assamese",
+    "tt": "tatar", "haw": "hawaiian", "ln": "lingala", "ha": "hausa",
+    "ba": "bashkir", "jw": "javanese", "su": "sundanese", "yue": "cantonese",
+}
+
+_NAME_TO_CODE = dict((name, code) for code, name in WHISPER_LANGUAGES.items())
+
+
+def language_code(value):
+    """
+    Whatever a backend reported, expressed as a code: "english" -> "en".
+
+    Already-a-code and unknown values pass through untouched, so a model that
+    reports something outside the table still shows up in the caption rather
+    than being swallowed into "??".
+    """
+    if not value:
+        return value
+    key = value.strip().lower()
+    if key in WHISPER_LANGUAGES:
+        return key
+    return _NAME_TO_CODE.get(key, value)
+
 
 class BackendError(RuntimeError):
     """Raised when a backend cannot be created or reached."""
+
+
+def normalize_language(language):
+    """
+    One spelling of "detect it" for backends that disagree about the word.
+
+    None / "" / "auto" (any case) -> None. The HTTP API wants the literal
+    string "auto" and faster-whisper wants None, so every backend stores None
+    and re-spells it at the call site instead of passing the flag through raw.
+
+    Idempotent, so backends can normalize again in their own __init__ and stay
+    correct when constructed directly rather than through create_backend().
+    """
+    if language is None:
+        return None
+    language = language.strip().lower()
+    if language in ("", "auto"):
+        return None
+    if language not in WHISPER_LANGUAGES:
+        raise BackendError(
+            "Unknown language '{0}'. Use a Whisper language code - mostly two "
+            "letters, e.g. en, es, fr, de, ja, zh, ms, id - or 'auto' to "
+            "detect it per request. Full names such as 'english' are not "
+            "accepted.".format(language)
+        )
+    return language
 
 
 # -------------------------------
@@ -41,7 +125,8 @@ class ServerBackend(object):
     name = "whisper.cpp server (GPU)"
     active_name = "server"      # see AutoBackend.active_name
 
-    def __init__(self, url="http://127.0.0.1:8080", timeout=30, check=True):
+    def __init__(self, url="http://127.0.0.1:8080", timeout=30, check=True,
+                 language=None):
         try:
             import requests  # noqa: F401 - validated here, used per-call
         except ImportError:
@@ -52,6 +137,7 @@ class ServerBackend(object):
         self._requests = __import__("requests")
         self.url = url.rstrip("/")
         self.timeout = timeout
+        self.language = normalize_language(language)
         # check=False builds a handle to a server that is NOT up yet, so
         # AutoBackend can keep polling it after a fallback. Without it the
         # only way to get a ServerBackend is to already have a live server.
@@ -94,7 +180,10 @@ class ServerBackend(object):
             "temperature": "0.0",
             "temperature_inc": "0.2",
             "response_format": "verbose_json",
-            "language": "auto",
+            # Sent on every request, so it overrides whatever -l the server was
+            # started with; start_whisper_server.bat's "-l auto" only supplies a
+            # default for requests that omit the field, and this one never does.
+            "language": self.language or "auto",
             "translate": "true" if translate else "false",
         }
         files = {"file": ("buffer.wav", wav_bytes, "audio/wav")}
@@ -110,7 +199,12 @@ class ServerBackend(object):
             raise BackendError("whisper-server request failed: {0}".format(e))
 
         payload = resp.json()
-        lang = payload.get("language") or "??"
+        # Always a code. whisper-server answers with a full name ("english")
+        # and faster-whisper with a code ("en"), so without this the same audio
+        # captions as [english] on GPU and [en] after an auto fallback - the
+        # label changing mid-session for no reason the viewer can see. A pin is
+        # authoritative; otherwise translate whatever the server said.
+        lang = self.language or language_code(payload.get("language")) or "??"
         results = []
         segments = payload.get("segments")
         if segments:
@@ -132,7 +226,8 @@ class LocalBackend(object):
     name = "faster-whisper (CPU int8)"
     active_name = "local"       # see AutoBackend.active_name
 
-    def __init__(self, model_path):
+    def __init__(self, model_path, language=None):
+        self.language = normalize_language(language)
         try:
             from faster_whisper import WhisperModel
         except ImportError:
@@ -152,12 +247,15 @@ class LocalBackend(object):
     def transcribe(self, buffer, translate=False):
         segments, info = self.model.transcribe(
             buffer,
-            language=None,
+            # None means detect; faster-whisper rejects the string "auto".
+            language=self.language,
             task="translate" if translate else "transcribe",
             word_timestamps=False,
             beam_size=1,
         )
-        lang = getattr(info, "language", None) or "??"
+        # Already a code here, but routed through the same helper so both
+        # backends are guaranteed to report in one vocabulary.
+        lang = self.language or language_code(getattr(info, "language", None)) or "??"
         results = []
         for segment in segments:
             text = segment.text.strip()
@@ -199,16 +297,20 @@ class AutoBackend(object):
     PROBE_INTERVAL_SEC = 60.0
     PROBE_TIMEOUT_SEC = 3.0
 
-    def __init__(self, server_url, model_path):
+    def __init__(self, server_url, model_path, language=None):
         self.server_url = server_url
         self._model_path = model_path
+        # Validated here, before anything expensive is built, so a bad code is
+        # a startup error even when the server is down and this constructor
+        # goes straight to loading the CPU model.
+        self._language = normalize_language(language)
         self._local = None          # built on first CPU pass, see _cpu()
         self._local_error = None    # sticky: set if the CPU model won't load
         self._failures = 0
         self._last_probe = time.monotonic()
 
         try:
-            self._server = ServerBackend(server_url)
+            self._server = ServerBackend(server_url, language=self._language)
             self._on_server = True
             print("Backend: {0} @ {1}".format(self._server.name, server_url))
             # _local stays None here: a session that never loses its server
@@ -219,7 +321,8 @@ class AutoBackend(object):
             print("[warn] Falling back to CPU faster-whisper (slower); will retry "
                   "the server every {0:.0f}s.".format(self.PROBE_INTERVAL_SEC))
             try:
-                self._server = ServerBackend(server_url, check=False)
+                self._server = ServerBackend(server_url, check=False,
+                                             language=self._language)
             except BackendError:
                 self._server = None   # no 'requests' - no server path at all
             # The server is already known-down, so CPU is needed immediately.
@@ -246,7 +349,7 @@ class AutoBackend(object):
         if self._local_error is not None:
             raise self._local_error
         try:
-            self._local = LocalBackend(self._model_path)
+            self._local = LocalBackend(self._model_path, language=self._language)
         except BackendError as e:
             # Remember the failure: retrying a missing or broken model would
             # stall the worker for seconds, on every pass, forever.
@@ -322,21 +425,30 @@ class AutoBackend(object):
 # Factory
 # -------------------------------
 def create_backend(backend="auto", server_url="http://127.0.0.1:8080",
-                   model_path=r"_models\faster-whisper-medium"):
+                   model_path=r"_models\faster-whisper-medium",
+                   language="auto"):
     """
     backend: "auto" | "server" | "local"
       auto   -> AutoBackend: whisper-server, with CPU fallback and recovery
       server -> whisper-server only; fail loudly if unreachable
       local  -> faster-whisper CPU only
+
+    language: a Whisper code ("en", "ms", ...) to pin, or "auto" to detect it
+      on every request. Pinning is worth it when you know the language:
+      detection reruns per buffer, and on short or noisy windows it can land
+      on a different answer than the one before, taking the transcript with it.
     """
+    language = normalize_language(language)
+    if language:
+        print("Language: {0} (pinned)".format(language))
     if backend == "server":
-        b = ServerBackend(server_url)
+        b = ServerBackend(server_url, language=language)
         print("Backend: {0} @ {1}".format(b.name, server_url))
         return b
     if backend == "local":
-        b = LocalBackend(model_path)
+        b = LocalBackend(model_path, language=language)
         print("Backend: {0}".format(b.name))
         return b
     if backend == "auto":
-        return AutoBackend(server_url, model_path)
+        return AutoBackend(server_url, model_path, language=language)
     raise BackendError("Unknown backend '{0}' (use auto|server|local)".format(backend))

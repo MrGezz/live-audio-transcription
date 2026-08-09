@@ -72,9 +72,10 @@ def audio_callback(indata, frames, time_info, status):
             np.arange(len(audio)),
             audio,
         ).astype(np.float32)
-    max_amp = np.max(np.abs(audio))
-    if max_amp > 0.02:
-        audio = audio / max_amp
+    # Not normalized here: scaling every ~128 ms chunk to full scale wipes out
+    # the level that silence_threshold below is supposed to measure, so quiet
+    # room tone arrives looking exactly as loud as speech and is transcribed.
+    # The window is normalized once instead, just before inference.
     audio_queue.put(audio)
 
 # Start audio stream
@@ -106,9 +107,13 @@ try:
                 buffer = buffer[int(samplerate * buffer_slide_sec):]  # slide buffer
                 continue
 
+            # Normalize the whole window at once - see audio_callback().
+            peak = np.max(np.abs(buffer))
+            audio = buffer / peak if peak > 0.02 else buffer
+
             # Transcribe current buffer (translate to English automatically)
             try:
-                results = backend.transcribe(buffer, translate=True)
+                results = backend.transcribe(audio, translate=True)
             except Exception as e:
                 # The auto backend re-raises the first few failures on purpose,
                 # so it can tell a hiccup from a dead server. Dying here would
