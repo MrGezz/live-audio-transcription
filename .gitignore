@@ -40,3 +40,15 @@ htmlcov/
   
 # Environment variables file  
 .env 
+# User-supplied model weights and whisper.cpp binaries.
+# Ignored wholesale rather than file-by-file: a single ggml model is ~250 MB,
+# well past GitHub's 100 MB per-file push limit, and listing binaries
+# individually meant any newly added .dll slipped through. Both folders are
+# documented in README.md / SETUP_AMD.md as things you download yourself.
+_models/
+_whisper.cpp/
+_whisper.cpp.bck/
+
+# Saved transcripts (--save; auto-named transcript_YYYYmmdd_HHMMSS.txt)
+transcript_*.txt
+my_transcript.txt
