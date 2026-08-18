@@ -35,6 +35,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import webbrowser
 
 import audio_sources
@@ -48,6 +51,15 @@ MODEL_DIR = os.path.join(HERE, "_models")
 SERVER_CMD = os.path.join(HERE, "start_whisper_server.cmd")
 
 VERSION = "2.0"
+
+# The only image name this panel will ever kill. See _engine_stop: the port
+# says which PID, and this says whether that PID is allowed to be it.
+SERVER_IMAGE_PREFIX = "whisper"
+
+# Whether whisper-server is up is not something this process is told - it is
+# another program, in another window, and it can die at any moment. So it is
+# polled.
+ENGINE_POLL_SEC = 5.0
 
 # Console lines that would otherwise arrive several times a second. The browser
 # gets everything; a terminal does not want a level meter.
@@ -72,6 +84,11 @@ class App(object):
         # tab connected. Held here, primed before the listener starts, and
         # refreshed off the loop.
         self._devices = {"loopback": [], "input": [], "errors": []}
+        # Same reasoning for the engine: netstat, tasklist and an HTTP probe
+        # are all blocking, so the panel reads a cache that a poller refreshes.
+        self._engine = {}
+        self._busy = ""              # the lifecycle command in flight, by name
+        self._busy_lock = threading.Lock()
 
     # -- lifecycle --------------------------------------------------------
     def run(self):
@@ -83,21 +100,65 @@ class App(object):
 
         if self.settings["web"]:
             self._start_server()
-        if self.settings["overlay"]:
-            self._start_overlay()
 
         try:
-            if self.overlay is not None:
-                self.overlay.run()
-            else:
-                while self.pipeline.alive() and not self._stop.is_set():
-                    if self._finished():
-                        break
-                    time.sleep(0.25)
+            self._main_loop()
         except KeyboardInterrupt:
             print("\nStopping transcription...")
         finally:
             self.shutdown()
+
+    def _main_loop(self):
+        """
+        Stay alive, and own Tk while doing it.
+
+        Two jobs, and they are really one. Tk may only be created and pumped on
+        the thread the process started on, so this is the only place an overlay
+        can be built or torn down; everything else - the worker, the capture
+        thread, the websocket loop - can only ask, by moving the `overlay`
+        setting.
+
+        The loop around overlay.run() is the point of the rewrite. run() IS the
+        Tk mainloop, and it returns whenever the window goes away - and the
+        panel unticking the overlay is one of the ways it goes away. That used
+        to return straight into shutdown(), so turning off the overlay from the
+        browser ended the whole program, took the panel down with it, and left
+        every button after that pressing on a closed socket. Now the window
+        closing is just an event: the loop decides again, and only the two
+        conditions below end anything.
+
+        The same is true of a stopped pipeline. Pressing Stop looks exactly
+        like a dead worker, and so does the gap in the middle of a Restart -
+        exiting there would remove the only thing that can start it again. With
+        no panel attached nothing has changed: a dead worker still ends the
+        program.
+        """
+        while not self._stop.is_set():
+            if self.overlay is not None:
+                self.overlay.run()          # blocks until the window closes
+                self.overlay = None
+                self._last_overlay_style = None
+                continue                    # decide again - do not exit
+
+            # Checked before the overlay is rebuilt, so a watchdog close that
+            # happened *because* there is nothing left to caption ends the
+            # program rather than opening a fresh window for it to close again.
+            if self._finished():
+                break
+            if not self.pipeline.alive() and self.server is None:
+                break
+
+            if self.settings["overlay"]:
+                self._start_overlay()
+                if self.overlay is None:
+                    # It cannot be opened - no display, or a Tk that will not
+                    # start. Say so once by turning the setting off, rather than
+                    # retrying every quarter second forever; the panel's
+                    # checkbox then shows what is actually true.
+                    self.pipeline.apply({"overlay": False})
+                continue
+
+            time.sleep(0.25)
 
     def _finished(self):
         """
@@ -155,7 +216,7 @@ class App(object):
             # transcribed to its last sample. Either way an overlay left
             # showing a stale caption over everything else is the wrong answer.
             self.overlay.set_watchdog(
-                lambda: self.pipeline.alive() and not self._finished(),
+                self._overlay_should_stay,
                 "Transcription stopped - see the console")
             self._last_overlay_style = self._overlay_style()
         except OverlayUnavailable as e:
@@ -164,6 +225,24 @@ class App(object):
         except RuntimeError as e:
             self.overlay = None
             print("[overlay] {0}".format(e))
+
+    def _overlay_should_stay(self):
+        """
+        Is there still a reason to keep the overlay on screen?
+
+        The watchdog closes it two seconds after this first returns False, and
+        for a dead worker that is right: a stale caption floating over
+        everything with nothing behind it is worse than no overlay at all.
+        A stop you asked for is a different thing. With the panel up there is
+        something that can undo it, so the window stays and the app keeps
+        running; the transcript on screen is the last thing that was said, not
+        a lie about the present.
+        """
+        if self._finished():
+            return False
+        if self.pipeline.alive():
+            return True
+        return self.server is not None and not self._stop.is_set()
 
     def _overlay_style(self):
         return dict((f.key, self.settings[f.key]) for f in settings_mod.SCHEMA
@@ -174,18 +253,25 @@ class App(object):
         self.pipeline.apply({"overlay_y_pct": round(y_pct, 3)})
 
     def _sync_overlay(self):
-        """The pipeline does not own the overlay, so the app applies its keys."""
+        """
+        Apply the overlay settings. Runs on whichever thread emitted them.
+
+        Deliberately cannot build a window. This is called from the pipeline's
+        worker thread, and creating Tk anywhere but the main thread is the
+        single most common way one of these programs dies - with "main thread
+        is not in main loop", raised from somewhere unrelated to the actual
+        call. So turning the overlay ON only records the setting and _main_loop
+        opens it. close() and configure() are safe from anywhere: overlay.py
+        queues them for its own pump.
+        """
         style = self._overlay_style()
         if style == self._last_overlay_style:
             return
         self._last_overlay_style = style
         if self.overlay is None:
-            if style["overlay"]:
-                self._start_overlay()
-            return
+            return                      # _main_loop opens one if it is wanted
         if not style["overlay"]:
-            self.overlay.close()
-            self.overlay = None
+            self.overlay.close()        # _main_loop sees run() return
             return
         self.overlay.configure(self.settings)
 
@@ -233,9 +319,10 @@ class App(object):
     def _start_server(self):
         from wsserver import WSServer
         s = self.settings
-        # Primed before anything can connect, so the first tab does not pay
-        # for it inside a callback that must not block.
+        # Both primed before anything can connect, so the first tab does not
+        # pay for either inside a callback that must not block.
         self._rescan_devices()
+        self._engine = self._engine_status()
         self.server = WSServer(
             host=s["web_host"], port=s["web_port"], static_dir=WEBUI_DIR,
             token=s["web_token"], on_open=self._ws_open,
@@ -255,6 +342,8 @@ class App(object):
             print("[web] WARNING: listening on {0} with no access token. "
                   "Anyone on this network can read the transcript and change "
                   "settings.".format(s["web_host"]))
+        threading.Thread(target=self._engine_poll, name="engine-poll",
+                         daemon=True).start()
         if s["web_open"]:
             threading.Timer(0.4, webbrowser.open, (self.server.url,)).start()
 
@@ -268,7 +357,8 @@ class App(object):
             "models": self._list_models(),
             "presets": self._list_presets(),
             "history": self.pipeline.history(200),
-            "serverBat": os.path.exists(SERVER_CMD),
+            "engine": dict(self._engine),
+            "busy": self._busy,
         }})
 
     def _ws_close(self, client, reason):
@@ -300,12 +390,20 @@ class App(object):
             client.send({"type": "ack", "data": dict({"command": name},
                                                      **(payload or {}))})
 
+        # start / stop / restart are the slow ones: loading a CPU model takes
+        # seconds and stop() joins the worker with a six-second timeout, and all
+        # of this runs ON the asyncio thread. Handed to _lifecycle, which runs
+        # them off the loop and refuses to run two at once.
         if name == "start":
-            self.pipeline.start()
-            ok()
+            ok({"queued": self._lifecycle("start", self._pipeline_start)})
         elif name == "stop":
-            self.pipeline.stop()
-            ok()
+            ok({"queued": self._lifecycle("stop", self._pipeline_stop)})
+        elif name == "restart":
+            ok({"queued": self._lifecycle("restart", self._pipeline_restart)})
+        elif name == "rebuild":
+            ok({"queued": self._lifecycle(
+                "rebuild", lambda: self.pipeline.rebuild(
+                    *(args.get("what") or ["backend"])))})
         elif name == "pause":
             self.pipeline.pause(True)
             ok()
@@ -341,7 +439,18 @@ class App(object):
         elif name == "preset_delete":
             ok(self._preset_delete(args.get("name", "")))
         elif name == "whisper_server":
-            ok(self._whisper_server(args))
+            action = str(args.get("action", "status"))
+            if action == "status":
+                # Cheap enough not to need the single slot, and a poll that
+                # queued behind a running Restart would report stale numbers
+                # for the whole of it.
+                threading.Thread(target=self._refresh_engine, name="engine",
+                                 daemon=True).start()
+                ok({"queued": "status"})
+            else:
+                ok({"queued": self._lifecycle(
+                    "engine " + action,
+                    lambda: self._engine_action(action, args))})
         elif name == "shutdown":
             ok()
             threading.Timer(0.3, self._request_exit).start()
@@ -456,6 +565,67 @@ class App(object):
             self.server.broadcast({"type": "presets",
                                    "data": self._list_presets()})
 
+    # -- lifecycle commands ------------------------------------------------
+    ENGINE_STOP_WAIT_SEC = 8.0
+    ENGINE_START_WAIT_SEC = 45.0
+
+    def _lifecycle(self, name, fn):
+        """
+        Run one slow lifecycle command off the event loop, one at a time.
+
+        Two reasons for the single slot. The obvious one is that Restart is
+        stop() followed by start(), and a second Restart arriving in the middle
+        would have its stop() race the first one's start() - and the button is
+        easy to press twice when nothing has visibly happened yet. The other is
+        that these take seconds, so without it a panel open in three tabs could
+        have three model loads running at once.
+
+        Returns the name if it was accepted, "" if something else is running.
+        """
+        with self._busy_lock:
+            if self._busy:
+                self.pipeline.log("warn", "'{0}' is still running - ignoring "
+                                          "'{1}'.".format(self._busy, name))
+                return ""
+            self._busy = name
+        self._broadcast_engine()
+
+        def body():
+            try:
+                fn()
+            except Exception as e:
+                self.pipeline.log("error", "{0} failed: {1}".format(name, e))
+            finally:
+                with self._busy_lock:
+                    self._busy = ""
+                try:
+                    self._refresh_engine()
+                except Exception:
+                    pass
+                self.pipeline.push_state()
+
+        threading.Thread(target=body, name=name.replace(" ", "-"),
+                         daemon=True).start()
+        return name
+
+    def _pipeline_start(self):
+        self.pipeline.start()
+        if self.overlay is not None:
+            self.overlay.clear()
+
+    def _pipeline_stop(self):
+        self.pipeline.stop()
+        if self.overlay is not None:
+            # Not close(): the watchdog decides that, and with the panel up a
+            # stop is undoable. This only stops the last caption sitting there
+            # looking live.
+            self.overlay.show("— transcription stopped —")
+
+    def _pipeline_restart(self):
+        self.pipeline.restart()
+        if self.overlay is not None:
+            self.overlay.clear()
+
     # -- whisper-server control -------------------------------------------
     def _list_models(self):
         """
@@ -481,58 +651,322 @@ class App(object):
         return {"ggml": ggml, "faster_whisper": faster,
                 "dir": os.path.relpath(MODEL_DIR, HERE)}
 
-    def _whisper_server(self, args):
-        """
-        Start or stop the GPU server from the panel.
+    def _server_endpoint(self):
+        """(host, port) of the whisper-server this session is configured for."""
+        url = self.settings.get("server_url") or "http://127.0.0.1:8080"
+        if "://" not in url:
+            url = "http://" + url
+        parts = urllib.parse.urlsplit(url)
+        return parts.hostname or "127.0.0.1", parts.port or 80
 
-        Deliberately narrow: the only thing that can be passed through is the
-        BASENAME of a .bin that already exists in _models, and it is checked
-        against the real listing rather than trusted. The panel can be reachable
-        from the network, and "run this batch file with these arguments" is not
-        something a browser gets to say freely.
-        """
-        action = args.get("action", "status")
-        if action == "stop":
-            proc = self._server_proc
-            self._server_proc = None
-            if proc is None or proc.poll() is not None:
-                return {"error": "This panel did not start a server."}
+    def _server_reachable(self, timeout=1.5):
+        """Is anything answering HTTP there? Blocking - never on the loop."""
+        url = (self.settings.get("server_url") or "").rstrip("/")
+        if not url:
+            return False
+        for path in ("/health", "/"):
             try:
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                               capture_output=True, timeout=10)
-            except Exception as e:
-                return {"error": "Could not stop it: {0}".format(e)}
-            return {"stopped": True}
+                urllib.request.urlopen(url + path, timeout=timeout).read(64)
+                return True
+            except urllib.error.HTTPError:
+                # It answered, and that is the whole question. /health only
+                # exists in later whisper.cpp builds, and a 404 from an older
+                # one still means the process is up - the same reasoning as
+                # ServerBackend.ping.
+                return True
+            except Exception:
+                continue
+        return False
 
-        if action != "start":
-            return {"running": self._server_proc is not None
-                              and self._server_proc.poll() is None}
+    def _server_pid(self):
+        """
+        PID of whatever holds the configured port, or None.
 
+        By port, never by image name. Killing by name would also kill a second
+        server somebody is running for something else, and this panel can be
+        open on a machine that is not the one in front of you. The port is what
+        the session actually depends on.
+        """
+        if os.name != "nt":
+            return None
+        _host, port = self._server_endpoint()
+        try:
+            out = subprocess.run(["netstat", "-ano", "-p", "TCP"],
+                                 capture_output=True, timeout=10).stdout
+        except Exception:
+            return None
+        listening, connected = None, None
+        for line in out.decode("utf-8", "replace").splitlines():
+            bits = line.split()
+            if len(bits) < 5 or bits[1].rsplit(":", 1)[-1] != str(port):
+                continue
+            try:
+                pid = int(bits[-1])
+            except ValueError:
+                continue
+            # PID 0 is the kernel holding a socket that no process owns any
+            # more - a TIME_WAIT left by the server that was just killed. It
+            # lingers for seconds and it is not something that can be stopped,
+            # so treating it as "the port is taken" made Restart kill the
+            # server and then refuse to start it again.
+            if pid == 0:
+                continue
+            # The state is read by shape rather than by spelling: LISTENING is
+            # localised on some Windows installs, but a listener's foreign
+            # address is 0.0.0.0:0 or [::]:0 in every locale. Rows for accepted
+            # connections carry the same owning PID anyway, so they are a
+            # fallback rather than a wrong answer.
+            if bits[2].rsplit(":", 1)[-1] == "0":
+                listening = pid
+            elif connected is None:
+                connected = pid
+        return listening if listening is not None else connected
+
+    @staticmethod
+    def _image_name(pid):
+        """The .exe behind a PID, or "". Used to refuse to kill the wrong one."""
+        if not pid or os.name != "nt":
+            return ""
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", "PID eq {0}".format(pid), "/NH", "/FO",
+                 "CSV"], capture_output=True, timeout=10).stdout
+        except Exception:
+            return ""
+        rows = out.decode("utf-8", "replace").strip().splitlines()
+        # A miss prints "INFO: No tasks are running which match ...", which is
+        # localised; the leading quote of a CSV row is not, so that is the test.
+        if not rows or not rows[0].startswith('"'):
+            return ""
+        return rows[0].split('","')[0].strip('"')
+
+    def _engine_status(self):
+        """Everything the panel needs about the GPU server. Blocking."""
+        pid = self._server_pid()
+        host, port = self._server_endpoint()
+        image = self._image_name(pid)
+        return {
+            "url": self.settings.get("server_url"),
+            "host": host,
+            "port": port,
+            "reachable": self._server_reachable(),
+            "pid": pid,
+            "image": image,
+            "ours": bool(image) and image.lower().startswith(
+                SERVER_IMAGE_PREFIX),
+            "launched": self._server_proc is not None,
+            "canStart": os.path.exists(SERVER_CMD),
+            "backend": self.settings.get("backend"),
+            "models": self._list_models()["ggml"],
+        }
+
+    def _refresh_engine(self):
+        self._engine = self._engine_status()
+        self._broadcast_engine()
+
+    def _broadcast_engine(self, extra=None):
+        if self.server is None:
+            return
+        data = dict(self._engine)
+        data["busy"] = self._busy
+        if extra:
+            data.update(extra)
+        self.server.broadcast({"type": "engine", "data": data})
+
+    def _engine_poll(self):
+        """
+        Keep the panel honest about a process this one does not own.
+
+        Only broadcasts on a change, so an idle panel is not carrying a message
+        every five seconds forever, and skips entirely while a lifecycle
+        command runs - that command reports its own result, and a poll landing
+        mid-restart would contradict it.
+        """
+        while not self._stop.wait(ENGINE_POLL_SEC):
+            if self._busy or self.server is None:
+                continue
+            try:
+                fresh = self._engine_status()
+            except Exception:
+                continue
+            was, self._engine = self._engine, fresh
+            if any(was.get(k) != fresh.get(k)
+                   for k in ("reachable", "pid", "image", "url", "canStart")):
+                self._broadcast_engine()
+                if fresh["reachable"] and not was.get("reachable"):
+                    self._backend_may_be_back()
+
+    def _backend_may_be_back(self):
+        """
+        The server just came up. Reconnect, if nothing else is going to.
+
+        AutoBackend re-probes on its own schedule and needs no help here. The
+        pinned server backend does: create_backend checked once at build time,
+        failed, and left Pipeline.backend as None with nothing that would ever
+        look again. That is the state in which restarting the engine changes
+        nothing at all and the panel looks broken.
+        """
+        if self.settings.get("backend") == "server" \
+                and self.pipeline.backend is None:
+            self.pipeline.log("info", "whisper-server is up - reconnecting the "
+                                      "transcription backend.")
+            self.pipeline.rebuild("backend")
+
+    def _engine_action(self, action, args):
+        if action == "stop":
+            self._engine_stop()
+        elif action == "start":
+            self._engine_start(args)
+        elif action == "restart":
+            if self._server_pid() is not None:
+                self._engine_stop()
+            self._engine_start(args)
+        else:
+            self.pipeline.log("warn",
+                              "Unknown engine action '{0}'.".format(action))
+
+    def _engine_stop(self):
+        """
+        Stop whisper-server - including one this panel did not start.
+
+        A stored Popen handle is not the answer on its own, and it used to be
+        the only one. The launcher line is: cmd /c start "" cmd /k
+        start_whisper_server.cmd - and that outer cmd exits the instant it has
+        spawned the window, so the handle is dead within milliseconds while the
+        server it started runs for hours. "This panel did not start a server"
+        was therefore the reply even when it had. The port is the thing that is
+        actually true, and it is equally true for a server started from the
+        launcher, from another panel, or by hand.
+        """
+        pid = self._server_pid()
+        host, port = self._server_endpoint()
+        if pid is None:
+            self._server_proc = None
+            self.pipeline.log("warn", "Nothing is listening on {0}:{1}.".format(
+                host, port))
+            return
+        image = self._image_name(pid)
+        if not image.lower().startswith(SERVER_IMAGE_PREFIX):
+            self.pipeline.log(
+                "error", "Port {0} is held by PID {1}, which is {2} - not a "
+                         "whisper server. Refusing to kill it. Either point "
+                         "server_url somewhere else, or close that program "
+                         "yourself.".format(
+                             port, pid,
+                             image or "a process this account cannot identify"))
+            return
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                           capture_output=True, timeout=10)
+        except Exception as e:
+            self.pipeline.log("error", "Could not stop PID {0}: {1}".format(
+                pid, e))
+            return
+        self._server_proc = None
+        # Only the server is killed, not the console window around it: the last
+        # lines of that log are the only place the reason for a crash is
+        # written down, and the window sits at its own pause holding them.
+        deadline = time.monotonic() + self.ENGINE_STOP_WAIT_SEC
+        while time.monotonic() < deadline and self._server_pid() is not None:
+            time.sleep(0.25)
+        self.pipeline.log("info", "{0} (PID {1}) stopped; port {2} is free."
+                          .format(image, pid, port))
+
+    def _engine_start(self, args):
+        """
+        Start the GPU server, then wait until it actually answers.
+
+        Deliberately narrow about what a browser can pass through: the only
+        argument is the BASENAME of a .bin that already exists in _models, and
+        it is checked against the real listing rather than trusted. The panel
+        can be reachable from the network, and "run this batch file with these
+        arguments" is not something a browser gets to say freely.
+        """
         if not os.path.exists(SERVER_CMD):
-            return {"error": "start_whisper_server.cmd is not next to app.py."}
-        if self._server_proc is not None and self._server_proc.poll() is None:
-            return {"error": "A server started from this panel is already "
-                             "running."}
+            self.pipeline.log("error", "{0} is not next to app.py.".format(
+                os.path.basename(SERVER_CMD)))
+            return
+        # The browser-supplied argument is checked first, before anything about
+        # the state of the machine. Both can be wrong at once, and "that model
+        # does not exist" is the more useful of the two answers - it is the one
+        # about something the caller can fix.
         model = os.path.basename(str(args.get("model", "")))
         known = [m["name"] for m in self._list_models()["ggml"]]
         if model and model not in known:
-            return {"error": "'{0}' is not a model in _models.".format(model)}
-        # Launched by its plain name with cwd set to the project, not by an
-        # absolute path: the .cmd resolves _whisper.cpp and _models relative to
-        # itself, and keeping every path in this project relative is what lets
-        # the folder be moved, cloned or put on a different drive without
-        # anything needing to be edited.
-        cmd = ["cmd", "/c", "start", "", "cmd", "/k",
-               os.path.basename(SERVER_CMD)]
+            self.pipeline.log("error",
+                              "'{0}' is not a model in _models.".format(model))
+            return
+        host, port = self._server_endpoint()
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            self.pipeline.log("error", "server_url points at {0}, which is not "
+                                       "this machine - nothing here can start "
+                                       "it.".format(host))
+            return
+        pid = self._server_pid()
+        if pid is not None:
+            self.pipeline.log("warn", "Port {0} is already held by PID {1} "
+                                      "({2}). Use Restart to replace it."
+                              .format(port, pid,
+                                      self._image_name(pid) or "unknown"))
+            return
+        # Relative, with cwd set to the project - never an absolute path. The
+        # .cmd resolves _whisper.cpp and _models relative to itself, and
+        # keeping every path here relative is what lets the folder be moved,
+        # cloned or put on a different drive with nothing to edit.
+        #
+        # The ".\\" is load-bearing and was the bug: cmd does not resolve a
+        # BARE batch name from the working directory, so `cmd /c
+        # start_whisper_server.cmd` answers "is not recognized as an internal
+        # or external command" - into a console nobody sees, which is why
+        # pressing Start did nothing at all and reported nothing.
+        #
+        # CREATE_NEW_CONSOLE rather than the old `cmd /c start "" cmd /k`. That
+        # form needed an interactive window station to work and gave back a
+        # handle to the launcher, which exited within milliseconds of spawning
+        # the window - so the handle said "dead" while the server ran for
+        # hours. This gives it its own window AND a handle whose lifetime is
+        # the server's.
+        cmd = ["cmd", "/c", os.path.join(".", os.path.basename(SERVER_CMD))]
         if model:
             cmd.append(model)
         try:
-            self._server_proc = subprocess.Popen(cmd, cwd=HERE)
+            self._server_proc = subprocess.Popen(
+                cmd, cwd=HERE,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
         except OSError as e:
-            return {"error": "Could not start it: {0}".format(e)}
-        return {"started": True, "model": model or "(default)",
-                "note": "It opens in its own window. Give it a few seconds to "
-                        "load, then watch the backend indicator switch to GPU."}
+            self.pipeline.log("error", "Could not start it: {0}".format(e))
+            return
+        self.pipeline.log("info", "whisper-server starting with {0} - it loads "
+                                  "in its own window.".format(
+                                      model or "the default model"))
+        deadline = time.monotonic() + self.ENGINE_START_WAIT_SEC
+        while time.monotonic() < deadline:
+            proc = self._server_proc
+            if proc is not None and proc.poll() is not None:
+                # The .cmd ends in `pause`, so it only returns once its window
+                # has been closed or it never opened one. Either way there is
+                # nothing left to wait for.
+                self.pipeline.log(
+                    "error", "The launcher exited with code {0} before the "
+                             "server answered. Its window has the reason - if "
+                             "none opened, run {1} yourself to see it.".format(
+                                 proc.returncode,
+                                 os.path.basename(SERVER_CMD)))
+                self._server_proc = None
+                return
+            if self._server_reachable(timeout=1.0):
+                self.pipeline.log("info", "whisper-server is answering on "
+                                          "{0}.".format(
+                                              self.settings.get("server_url")))
+                self._refresh_engine()
+                self._backend_may_be_back()
+                return
+            time.sleep(0.5)
+        self.pipeline.log(
+            "warn", "whisper-server has not answered within {0:.0f}s. A large "
+                    "model can take longer than that to load - watch its "
+                    "window, and press Reconnect once it says it is listening."
+                    .format(self.ENGINE_START_WAIT_SEC))
 
 
 def main(argv=None):

@@ -19,6 +19,7 @@
 const S = {
   ws: null,
   connected: false,
+  everConnected: false,    // so the first connect does not flash "offline"
   retry: 0,
   schema: null,
   fields: new Map(),        // key -> {field, el, setValue}
@@ -27,6 +28,8 @@ const S = {
   devices: { loopback: [], input: [], errors: [] },
   models: { ggml: [], faster_whisper: [] },
   presets: [],
+  engine: {},              // whisper-server as seen from the port, not guessed
+  busy: '',                // the lifecycle command in flight, by name
   lastMeter: {},
   unseenLogs: 0,
   mic: { stream: null, ctx: null, node: null, sent: 0, started: 0 },
@@ -90,12 +93,14 @@ function connect() {
 
   ws.onopen = () => {
     S.connected = true;
+    S.everConnected = true;
     S.retry = 0;
     setConn('on');
     send({ type: 'hello', role: 'control' });
   };
   ws.onclose = () => {
     S.connected = false;
+    S.busy = '';
     setConn('off');
     stopMic('connection lost');
     scheduleRetry();
@@ -121,6 +126,13 @@ function setConn(state) {
   const dot = $('#connDot');
   dot.className = 'dot' + (state === 'on' ? ' on' : state === 'busy' ? ' busy' : '');
   dot.title = state === 'on' ? 'connected' : state === 'busy' ? 'connecting…' : 'disconnected';
+  // A 6px dot is not enough. Everything on this page is a snapshot of the last
+  // message that arrived, so a dead socket looks exactly like a working one
+  // that is idle - the meters keep their last values, the button still says
+  // Stop, and clicking it does nothing at all with nothing saying why.
+  document.body.classList.toggle('offline', state !== 'on');
+  applyRunState();
+  renderEngine();
 }
 
 function send(obj) {
@@ -139,8 +151,11 @@ function handle(type, data) {
       S.devices = data.devices || S.devices;
       S.models = data.models || S.models;
       S.presets = data.presets || [];
+      S.engine = data.engine || {};
+      S.busy = data.busy || '';
       buildControls();
       renderPresets();
+      renderEngine();
       applyStatus(data.status || {});
       (data.history || []).forEach(e => addCaption(e, true));
       trimTranscript();
@@ -158,6 +173,12 @@ function handle(type, data) {
     case 'devices': S.devices = data; refreshControls(); toast('Devices rescanned', 'good'); break;
     case 'models': S.models = data; refreshControls(); break;
     case 'presets': S.presets = data; renderPresets(); break;
+    case 'engine':
+      S.engine = data;
+      S.busy = data.busy || '';
+      renderEngine();
+      applyRunState();
+      break;
     case 'history': $('#transcript').innerHTML = ''; data.forEach(e => addCaption(e, true)); break;
     case 'benchmark': renderBench(data); break;
     case 'export': downloadExport(data); break;
@@ -173,8 +194,10 @@ function handleAck(data) {
   if (data.deleted) toast('Preset "' + data.deleted + '" deleted');
   if (data.loaded) toast('Preset "' + data.loaded + '" loaded', 'good');
   if (data.presets) { S.presets = data.presets; renderPresets(); }
-  if (data.started) toast('whisper-server starting: ' + data.model + '. ' + (data.note || ''), 'good');
-  if (data.stopped) toast('whisper-server stopped');
+  // Lifecycle commands report through the log and through 'engine', not
+  // through their ack: they finish seconds after it, and an ack that said
+  // "done" the instant the button was pressed was the lie worth removing.
+  if (data.queued === '') toast('Something else is still running', 'warn');
 }
 
 // ---------------------------------------------------------------- controls
@@ -452,6 +475,8 @@ function applyStatus(st) {
     st.paused ? 'Resume' : 'Pause');
   $('#btnPause').classList.toggle('on', !!st.paused);
 
+  applyRunState();
+
   if (st.stats && st.stats.xrt != null) {
     const p = $('#pillRt');
     p.querySelector('b').textContent = st.stats.xrt.toFixed(2) + 'x';
@@ -537,13 +562,202 @@ function maybeSuggestModel(st) {
   });
   sel.value = smallest.name;
   const go = el('button', 'btn tiny primary', 'Restart server with it');
-  go.onclick = () => { command('whisper_server', { action: 'start', model: sel.value }); box.remove(); };
+  // 'restart', not 'start': the whole point is that one is already running,
+  // and 'start' would refuse because the port is taken.
+  go.onclick = () => { command('whisper_server', { action: 'restart', model: sel.value }); box.remove(); };
   const bench = el('button', 'btn tiny', 'Benchmark instead');
   bench.onclick = () => { showTab('bench'); box.remove(); };
   row.append(sel, go, bench);
   box.append(row);
   $('#toasts').append(box);
   setTimeout(() => box.remove(), 30000);
+}
+
+// ---------------------------------------------------------------- lifecycle
+/*
+  Start / Stop / Restart, for the session and for the GPU server.
+
+  These exist because every other control here is a settings patch, and a
+  settings patch can leave something down. Change the capture device to one
+  that has been unplugged, or switch the backend to the server before the
+  server is up, and the component fails to rebuild - the Python side logs it
+  and carries on with that attribute set to nothing. Nothing retries. Before
+  these buttons the only cure was closing the program and starting it again,
+  which is a walk to the machine it runs on if you are reading this over the
+  network.
+
+  Both cards are driven from one place: `state` says whether the session is
+  running, `engine` says whether whisper-server is, and `busy` names the
+  command in flight so the buttons cannot be pressed twice into a race.
+*/
+function blocked() {
+  return S.busy || (S.connected ? '' : 'offline');
+}
+
+function applyRunState() {
+  const st = S.status || {};
+  const busy = blocked();
+  const running = !!st.running;
+
+  const run = $('#btnRun');
+  setLabel(run, running ? 'stop' : 'play', running ? 'Stop' : 'Start');
+  run.title = running ? 'Stop capture and transcription altogether'
+    : 'Build everything again and start capturing';
+  run.classList.toggle('primary', !running);
+  run.disabled = !!busy;
+  $('#btnRestart').disabled = !!busy;
+  $('#btnPause').disabled = !!busy || !running;
+
+  const sRun = $('#btnSessionRun');
+  setLabel(sRun, running ? 'stop' : 'play', running ? 'Stop' : 'Start');
+  sRun.disabled = !!busy;
+  $('#btnSessionRestart').disabled = !!busy;
+  $('#btnReconnect').disabled = !!busy || !running;
+
+  const dot = $('#sessionDot');
+  dot.className = 'engineDot ' + (busy && !busy.startsWith('engine') ? 'busy'
+    : running ? (st.source_alive ? 'on' : 'off') : 'off');
+  $('#sessionState').textContent = running
+    ? (st.source_alive ? 'capturing' : 'running, but nothing is being captured')
+    : 'stopped';
+  $('#sessionSource').textContent = st.source || 'no capture';
+  $('#sessionWho').textContent = [
+    st.backend_name ? 'backend: ' + st.backend_name : 'backend: none',
+    st.strategy ? 'chunking: ' + st.strategy : null,
+    st.gate ? 'speech gate on' : 'speech gate off',
+    st.saving ? 'writing ' + st.saving : null,
+  ].filter(Boolean).join('  ·  ');
+
+  renderBanner();
+}
+
+/* One line above the meters, because that is where the eye already is when
+   nothing is happening - "the meters are flat" and "nothing is running" look
+   identical until something says which. */
+function renderBanner() {
+  const st = S.status || {};
+  const box = $('#runBanner');
+  const busy = S.busy || '';
+  box.innerHTML = '';
+  box.className = 'runBanner';
+
+  // Silent during the opening handshake - the dot already says "connecting",
+  // and a red banner on every page load would be noise. Once we have been
+  // connected, or two retries have failed, the silence is the wrong answer.
+  if (!S.connected && (S.everConnected || S.retry >= 2)) {
+    box.className = 'runBanner bad';
+    box.append(icon('warn'));
+    box.append(el('span', 'grow', S.everConnected
+      ? 'Lost the connection to the program. Everything below is the last '
+        + 'thing it said, and no button here can reach it. If its window has '
+        + 'closed, start it again — this page reconnects on its own.'
+      : 'Cannot reach the program on this address. Check that it is running '
+        + 'with --web, and that the port matches.'));
+    box.hidden = false;
+    return;
+  }
+
+  const say = (kind, iconName, text, actions) => {
+    box.className = 'runBanner ' + kind;
+    box.append(icon(iconName));
+    box.append(el('span', 'grow', text));
+    (actions || []).forEach(([label, fn, primary]) => {
+      const b = el('button', 'btn tiny' + (primary ? ' primary' : ''), label);
+      b.onclick = fn;
+      box.append(b);
+    });
+    box.hidden = false;
+  };
+
+  if (busy) {
+    say('busy', 'refresh', busy.charAt(0).toUpperCase() + busy.slice(1)
+      + ' in progress — this takes a few seconds.');
+    return;
+  }
+  if (!st.running) {
+    say('bad', 'warn', 'Nothing is capturing or transcribing.', [
+      ['Start', () => command('start'), true],
+      ['Open Engine', () => showTab('engine')],
+    ]);
+    return;
+  }
+  if (!st.source_alive) {
+    say('bad', 'warn', 'The capture device is not running'
+      + (st.error ? ' — ' + st.error : '.'), [
+      ['Restart', () => command('restart'), true],
+      ['Rescan devices', () => command('devices')],
+    ]);
+    return;
+  }
+  if (!st.backend) {
+    say('bad', 'warn', 'No transcription backend'
+      + (st.error ? ' — ' + st.error : '.'), [
+      ['Reconnect', () => command('rebuild', { what: ['backend'] }), true],
+      ['Open Engine', () => showTab('engine')],
+    ]);
+    return;
+  }
+  box.hidden = true;
+}
+
+function renderEngine() {
+  const e = S.engine || {};
+  const busy = (S.busy || '').startsWith('engine') ? S.busy : '';
+  const anyBusy = !!blocked();
+
+  $('#engineDot').className = 'engineDot '
+    + (busy ? 'busy' : e.reachable ? 'on' : 'off');
+  $('#engineState').textContent = busy ? busy + '…'
+    : e.reachable ? 'answering'
+      : e.pid ? 'port taken, no answer yet'
+        : 'not running';
+  $('#engineUrl').textContent = e.url || '—';
+
+  const who = [];
+  if (e.pid) {
+    who.push('PID ' + e.pid + ' holds ' + e.host + ':' + e.port
+      + ' — ' + (e.image || 'image unknown'));
+    if (!e.ours) {
+      who.push('that is not a whisper server, so Stop will refuse to kill it');
+    }
+  } else {
+    who.push('nothing is listening on ' + (e.host || '?') + ':' + (e.port || '?'));
+  }
+  if (e.canStart === false) {
+    who.push('start_whisper_server.cmd is not next to app.py, so it cannot be started from here');
+  }
+  if (e.backend === 'local') {
+    who.push('the backend setting is "local", so this session will not use it even when it is up');
+  }
+  $('#engineWho').textContent = who.join('  ·  ');
+
+  fillEngineModels(e.models || []);
+  $('#btnEngineStart').disabled = anyBusy || !!e.pid || e.canStart === false;
+  $('#btnEngineRestart').disabled = anyBusy || e.canStart === false;
+  $('#btnEngineStop').disabled = anyBusy || !e.pid;
+  $('#btnEngineCheck').disabled = anyBusy;
+}
+
+function fillEngineModels(models) {
+  const sel = $('#engineModel');
+  const sig = models.map(m => m.name + m.size_mb).join('|');
+  if (sel.dataset.sig === sig) return;
+  sel.dataset.sig = sig;
+  const cur = sel.value;
+  sel.innerHTML = '';
+  sel.append(el('option', null, models.length
+    ? '(whatever start_whisper_server.cmd defaults to)'
+    : 'no .bin files in _models'));
+  models.forEach(m => {
+    const o = el('option', null, m.name + '  (' + m.size_mb + ' MB)');
+    o.value = m.name;
+    sel.append(o);
+  });
+  if (cur) sel.value = cur;
+}
+
+function engineArgs() {
+  return { model: $('#engineModel').value || '' };
 }
 
 // ---------------------------------------------------------------- transcript
@@ -899,7 +1113,23 @@ function showTab(name) {
 function wire() {
   $$('.tab').forEach(t => t.onclick = () => showTab(t.dataset.tab));
 
+  $('#btnRun').onclick = () => command(S.status.running ? 'stop' : 'start');
+  $('#btnRestart').onclick = () => command('restart');
   $('#btnPause').onclick = () => command(S.status.paused ? 'resume' : 'pause');
+
+  $('#btnSessionRun').onclick = () => command(S.status.running ? 'stop' : 'start');
+  $('#btnSessionRestart').onclick = () => command('restart');
+  $('#btnReconnect').onclick = () => command('rebuild', { what: ['backend'] });
+
+  $('#btnEngineStart').onclick = () => command('whisper_server', Object.assign({ action: 'start' }, engineArgs()));
+  $('#btnEngineRestart').onclick = () => command('whisper_server', Object.assign({ action: 'restart' }, engineArgs()));
+  $('#btnEngineStop').onclick = () => {
+    if (S.engine.ours === false && S.engine.pid) {
+      toast('PID ' + S.engine.pid + ' is not a whisper server — it will not be killed', 'warn');
+    }
+    command('whisper_server', { action: 'stop' });
+  };
+  $('#btnEngineCheck').onclick = () => command('whisper_server', { action: 'status' });
   $('#btnClear').onclick = () => {
     command('clear');
     $('#transcript').innerHTML = '';

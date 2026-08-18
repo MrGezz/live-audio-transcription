@@ -129,9 +129,19 @@ What that buys over the console:
   underlined. Hover for the number.
 - **Devices in a dropdown**, not a console prompt you have to answer before the
   program will start.
+- **Start, stop and restart, from the page.** The **Engine** tab runs both
+  halves of this: `whisper-server` in its own console window, and the session
+  itself — capture, speech gate and backend. A settings change can leave a
+  component down (a device that was unplugged, a model file that is not there,
+  a server that was not up yet) and nothing retried on its own; a banner above
+  the meters now says which one, why, and has the button that fixes it.
+  Stopping the session no longer ends the program, so there is something left
+  to press Start on.
 - **A model switcher.** When inference falls behind real time, the panel lists
   the GGML models in `_models\` and offers to restart `whisper-server` with a
-  smaller one.
+  smaller one — including a server this panel did not start. It finds it by the
+  port `server_url` points at, and checks the image name before sending
+  anything, so it will not kill something else that happens to hold that port.
 - **Export any session** as `.txt`, `.jsonl`, `.srt` or `.vtt`, whether or not
   you remembered to turn saving on — the word timings are already there.
 - **Presets**, saved and loaded by name.

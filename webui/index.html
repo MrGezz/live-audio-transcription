@@ -55,6 +55,9 @@
   <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 2h8l4 4v16H6zm8 1.5V7h3.5zM8 11h8v2H8zm0 4h8v2H8z"/></symbol>
   <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 10 6-10 6L2 8zm0 12.3L4.6 9.8 2 11.5l10 6 10-6-2.6-1.7z"/></symbol>
   <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 2 1 21h22zm-1 7h2v6h-2zm0 8h2v2h-2z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M11 3h2v10h-2zM7.1 6.3 5.7 4.9a9 9 0 1 0 12.6 0l-1.4 1.4a7 7 0 1 1-9.8 0z"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M7 2h2v6H7zm8 0h2v6h-2zM5 9h14v3a7 7 0 0 1-6 6.9V22h-2v-3.1A7 7 0 0 1 5 12z"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></symbol>
 </svg>
 
@@ -82,6 +85,11 @@
   </div>
 
   <div class="topActions">
+    <button id="btnRun" class="btn" title="Stop capture and transcription altogether">
+      <svg class="i"><use href="#i-stop"/></svg>Stop</button>
+    <button id="btnRestart" class="btn icon"
+            title="Rebuild capture, gate and backend from the settings as they are now">
+      <svg class="i"><use href="#i-refresh"/></svg></button>
     <button id="btnPause" class="btn" title="Keep capturing, stop transcribing">
       <svg class="i"><use href="#i-pause"/></svg>Pause</button>
     <button id="btnClear" class="btn tiny" title="Clear the transcript">
@@ -104,6 +112,8 @@
 
   <!-- ================= left: what was said ================= -->
   <section class="stage">
+
+    <div id="runBanner" class="runBanner" hidden></div>
 
     <div class="meters">
       <div class="meter">
@@ -131,6 +141,8 @@
         <svg class="i"><use href="#i-gauge"/></svg>Benchmark</button>
       <button class="tab" data-tab="mic">
         <svg class="i"><use href="#i-mic"/></svg>Browser audio</button>
+      <button class="tab" data-tab="engine">
+        <svg class="i"><use href="#i-power"/></svg>Engine</button>
       <span class="grow"></span>
       <label class="check tiny"><input type="checkbox" id="chkAutoscroll" checked> follow</label>
       <label class="check tiny"><input type="checkbox" id="chkConfidence" checked> confidence</label>
@@ -198,6 +210,73 @@
         </div>
         <div class="row dim tiny" id="micStats"></div>
         <p class="warn tiny" id="micWarn" hidden></p>
+      </div>
+    </div>
+
+    <div class="panel" id="tab-engine">
+      <div class="micPane">
+        <div class="secHead">
+          <div class="secGlyph"><svg class="i"><use href="#i-power"/></svg></div>
+          <div class="secTitles">
+            <h2>Engine and session</h2>
+            <div class="sub">Start, stop and restart both of them from here</div>
+          </div>
+        </div>
+        <p>Two separate things run: <b>whisper-server</b>, the GPU process in its
+           own console window, and <b>this session</b> &mdash; the capture device,
+           the speech gate and the backend connection. A setting that rebuilds a
+           component can leave it down &mdash; a device that was unplugged, a model
+           file that is not there, a server that was not up yet &mdash; and nothing
+           retries on its own. That is what these buttons are for.</p>
+
+        <div class="engine" id="engineCard">
+          <div class="engineHead">
+            <span class="engineDot" id="engineDot"></span>
+            <b id="engineState">checking…</b>
+            <span class="ttag" id="engineUrl"></span>
+            <span class="grow"></span>
+            <button class="btn tiny" id="btnEngineCheck" title="Re-read the port now">
+              <svg class="i"><use href="#i-refresh"/></svg></button>
+          </div>
+          <div class="engineWho dim tiny" id="engineWho"></div>
+          <div class="row">
+            <label class="grow">Model
+              <select id="engineModel" title="A .bin from _models. Only files that are actually there can be chosen."></select>
+            </label>
+            <button class="btn primary" id="btnEngineStart">
+              <svg class="i"><use href="#i-play"/></svg>Start</button>
+            <button class="btn" id="btnEngineRestart" title="Stop it, wait for the port, start it again">
+              <svg class="i"><use href="#i-refresh"/></svg>Restart</button>
+            <button class="btn" id="btnEngineStop">
+              <svg class="i"><use href="#i-stop"/></svg>Stop</button>
+          </div>
+          <p class="dim tiny">Stopping kills whatever holds that port &mdash; but only
+             if it is a whisper server, checked by image name before anything is
+             sent. The console window it was launched in stays open at its own
+             prompt, because the last lines of that log are the only place the
+             reason for a crash is written down.</p>
+        </div>
+
+        <div class="engine" id="sessionCard">
+          <div class="engineHead">
+            <span class="engineDot" id="sessionDot"></span>
+            <b id="sessionState">—</b>
+            <span class="ttag" id="sessionSource"></span>
+            <span class="grow"></span>
+          </div>
+          <div class="engineWho dim tiny" id="sessionWho"></div>
+          <div class="row">
+            <button class="btn primary" id="btnSessionRun">
+              <svg class="i"><use href="#i-stop"/></svg>Stop</button>
+            <button class="btn" id="btnSessionRestart" title="Rebuild everything from the settings as they are now">
+              <svg class="i"><use href="#i-refresh"/></svg>Restart session</button>
+            <button class="btn" id="btnReconnect" title="Rebuild only the transcription backend">
+              <svg class="i"><use href="#i-plug"/></svg>Reconnect backend</button>
+          </div>
+          <p class="dim tiny">Restart keeps the transcript and drops the
+             performance numbers: averaged across a GPU run and the CPU run that
+             replaced it, xRT describes neither.</p>
+        </div>
       </div>
     </div>
   </section>

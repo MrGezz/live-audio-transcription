@@ -45,6 +45,12 @@ from whisper_backends import DECODE_OPTIONS, BackendError, create_backend
 
 SAMPLERATE = 16000
 
+
+def _new_stats():
+    return {"windows": 0, "captions": 0, "dropped": 0, "skipped": 0,
+            "infer_total": 0.0, "audio_total": 0.0}
+
+
 # How often the level meter is pushed out. Fast enough that the bar tracks
 # speech, slow enough that a websocket is not carrying 125 messages a second
 # for a number nobody reads that precisely.
@@ -109,8 +115,7 @@ class Pipeline(object):
         self._last_gate = None
         self._drained = False
         self._recent_languages = collections.Counter()
-        self._stats = {"windows": 0, "captions": 0, "dropped": 0,
-                       "skipped": 0, "infer_total": 0.0, "audio_total": 0.0}
+        self._stats = _new_stats()
 
     # -- plumbing ---------------------------------------------------------
     def emit(self, kind, data):
@@ -159,6 +164,42 @@ class Pipeline(object):
             self.writer = None
         self._worker = None
         self._push_state()
+
+    def restart(self):
+        """
+        Tear everything down and build it again from the current settings.
+
+        This exists because a rebuild can fail. Change the capture device to
+        one that has been unplugged, point the model at a file that is not
+        there, or switch to the server backend before the server is up, and
+        _build_source / _build_backend log the failure and leave that
+        attribute None. The worker thread survives - deliberately, it is the
+        only thing draining the audio queue - but nothing in it will ever
+        retry, so the session sits there alive and deaf. Until now the only
+        cure was closing the program and starting it again, which from a
+        browser panel means walking over to the machine it runs on.
+
+        The transcript survives, because words said before a device was
+        swapped are still part of the session. The performance stats do not:
+        averaged across a GPU run and the CPU run that replaced it, xRT
+        describes neither.
+
+        Raises whatever start() raises. Slow - the CPU backend takes seconds
+        to load a model - so callers on an event loop must hand it to a
+        thread.
+        """
+        self.log("info", "Restarting: stopping capture and rebuilding.")
+        self.stop()
+        with self._lock:
+            self._stats = _new_stats()
+            self._consecutive_errors = 0
+            self._last_error = ""
+            self._drained = False
+            self._last_gate = None
+        self.start()
+        self.log("info", "Restarted. {0}".format(
+            "Capturing: {0}".format(self.source.name) if self.source is not None
+            else "Capture did NOT come back - see the errors above."))
 
     def alive(self):
         return self._worker is not None and self._worker.is_alive()
@@ -218,6 +259,28 @@ class Pipeline(object):
         for key in sorted(changed):
             self.log("info", "{0} -> {1}".format(key, changed[key]))
         return changed, errors
+
+    def rebuild(self, *components):
+        """
+        Force a rebuild with no settings change behind it.
+
+        rebuilds_for only fires when a value actually moves, which is right for
+        a settings patch and wrong for everything the world does on its own:
+        the GPU server coming back up, a device being plugged in again, a model
+        file appearing where there wasn't one. Those need the same rebuild with
+        the same settings, and there was no way to ask for it.
+
+        Queued like any other patch, so it lands between inferences rather than
+        inside one.
+        """
+        wanted = set(components) & {"backend", "gate", "strategy", "save",
+                                    "source"}
+        if not wanted:
+            return
+        with self._lock:
+            self._rebuild |= wanted
+            if not self.alive():
+                self._drain_pending()
 
     def _drain_pending(self):
         """Apply queued settings. Runs on the worker thread once started."""
@@ -572,6 +635,10 @@ class Pipeline(object):
         self.emit("meter", payload)
 
     # -- introspection ----------------------------------------------------
+    def push_state(self):
+        """Ask for a state event now. Used by the front end after a command."""
+        self._push_state()
+
     def _push_state(self):
         self.emit("state", self.status())
 
