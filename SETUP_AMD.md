@@ -11,7 +11,7 @@ HTTP server (`whisper-server`). The Python scripts now talk to it automatically.
 > **NVIDIA users:** you don't need the Vulkan-specific steps below. Grab a **CUDA build**
 > of whisper.cpp instead — the official [releases](https://github.com/ggml-org/whisper.cpp/releases)
 > ship `whisper-cublas` zips — drop `whisper-server.exe` + DLLs into `_whisper.cpp\`, and
-> use `start_whisper_server.bat <model>` exactly as described. The app and launcher are
+> use `start_whisper_server.cmd <model>` exactly as described. The app and launcher are
 > backend-agnostic; only the build you place in `_whisper.cpp\` differs.
 
 ## Architecture
@@ -56,10 +56,10 @@ and place it at:
 ```
 live-audio-transcription\_models\ggml-base-q5_1.bin
 ```
-That filename is what `start_whisper_server.bat` loads by default. To use a
+That filename is what `start_whisper_server.cmd` loads by default. To use a
 different model, drop it in `_models\` and pass its filename:
 ```
-start_whisper_server.bat ggml-medium-q5_0.bin
+start_whisper_server.cmd ggml-medium-q5_0.bin
 ```
 Bigger models are more accurate but slower — if inference takes longer than
 `--slide` seconds, `live_transcription.py` starts skipping audio to stay live
@@ -71,7 +71,7 @@ CPU fallback.)
 ## 3. Start the server
 
 ```
-start_whisper_server.bat
+start_whisper_server.cmd
 ```
 The startup log should show your GPU, e.g.
 `ggml_vulkan: 0 = AMD Radeon Pro W5500 ...`. Leave this window running.
@@ -113,7 +113,7 @@ so there is only one place to keep current.
   first regardless, because loading is plain code and the fault happens on the
   first compute kernel. Fix by building from source on that machine
   (Option B above — CMake targets the host CPU) or finding a build that
-  matches it. `start_whisper_server.bat` detects this case and says so.
+  matches it. `start_whisper_server.cmd` detects this case and says so.
 - `pip install -r requirements.txt` (adds `requests`).
 - Language auto-detect and per-request `--translate` are passed through to the
   server; no server restart needed to toggle translation.

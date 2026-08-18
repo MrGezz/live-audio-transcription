@@ -1,5 +1,9 @@
 @echo off
 REM ============================================================
+REM  A COMPONENT, not the launcher. run_pipeline.cmd starts this for
+REM  you; run it directly only when you want the GPU server on its
+REM  own, or with a different model.
+REM
 REM  Start whisper.cpp whisper-server (Vulkan or CUDA build)
 REM  (AMD/Intel -> Vulkan; NVIDIA -> CUDA. The app is backend-agnostic.)
 REM
@@ -10,9 +14,9 @@ REM ============================================================
 
 set WHISPER_DIR=%~dp0_whisper.cpp
 REM  Override the model by passing a filename from _models\ as argument 1:
-REM    start_whisper_server.bat ggml-base-q5_1.bin
+REM    start_whisper_server.cmd ggml-base-q5_1.bin
 set MODEL=%~dp0_models\%~1
-if "%MODEL%"=="%~dp0_models\" set MODEL=%~dp0_models\ggml-base-q5_1.bin
+if "%MODEL%"=="%~dp0_models\" set MODEL=%~dp0_models\ggml-small.en-q5_1.bin
 set HOST=127.0.0.1
 set PORT=8080
 

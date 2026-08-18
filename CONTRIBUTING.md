@@ -11,7 +11,7 @@ Thank you for considering contributing! This guide covers how this project actua
 | `live_transcription_lite.py` | Console-only version, zero arguments |
 | `benchmark.py` | Times inference through `create_backend()`; recommends `--buffer` / `--slide` |
 | `speech_gate.py` | Silero VAD wrapper; skips buffers with no speech before they reach a backend |
-| `start_whisper_server.bat` | Starts the whisper.cpp GPU server (`_whisper.cpp\whisper-server.exe`) |
+| `start_whisper_server.cmd` | Starts the whisper.cpp GPU server (`_whisper.cpp\whisper-server.exe`) |
 | `run_pipeline.cmd` / `Start Transcription.vbs` | Guided launcher / double-click shortcut |
 | `SETUP_AMD.md` | GPU setup walkthrough (build or download whisper.cpp, models) |
 
@@ -31,7 +31,7 @@ python -m venv .venv
 
 To run against the GPU backend:
 
-1. `start_whisper_server.bat ggml-medium-q5_0.bin` (no argument = default `ggml-base-q5_1.bin`)
+1. `start_whisper_server.cmd ggml-medium-q5_0.bin` (no argument = default `ggml-base-q5_1.bin`)
 2. Wait until the server responds: `curl -s -o NUL -w "%%{http_code}" http://127.0.0.1:8080/` → `200`
 3. `set PYTHONUTF8=1` then `.venv\Scripts\python live_transcription.py`
 

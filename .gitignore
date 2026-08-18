@@ -45,10 +45,17 @@ htmlcov/
 # well past GitHub's 100 MB per-file push limit, and listing binaries
 # individually meant any newly added .dll slipped through. Both folders are
 # documented in README.md / SETUP_AMD.md as things you download yourself.
-_models/
+# _models/* rather than _models/ : git does not descend into an ignored
+# DIRECTORY, so a negation for anything inside one can never match. Ignoring
+# the contents instead is what lets the small Silero export below be kept.
+_models/*
+!_models/silero_vad*.onnx
 _whisper.cpp/
 _whisper.cpp.bck/
 
 # Saved transcripts (--save; auto-named transcript_YYYYmmdd_HHMMSS.txt)
 transcript_*.txt
 my_transcript.txt
+
+# Saved presets are personal setups; the folder is kept, its contents are not.
+presets/*.json

@@ -14,21 +14,40 @@ This also adds **GPU support via whisper.cpp** — Vulkan for AMD/Intel, CUDA fo
 ## Architecture
 
 ```
-Stereo Mix ──> live_transcription.py ── HTTP (localhost:8080) ──> whisper-server.exe (Vulkan/CUDA GPU)
-                      │                                                   │
-                      └────── CPU faster-whisper fallback if the server is down, or goes down
+  loopback / Stereo Mix / browser / WAV
+                 │
+                 ▼
+          audio_sources.py ──► speech_gate.py ──► buffering.py ──► whisper_backends.py
+           (capture, 16 kHz)     (Silero VAD)     (window policy)         │
+                 │                                                       ├─► whisper-server.exe
+                 └───────────────── pipeline.py ◄────────────────────────┘   (Vulkan/CUDA GPU)
+                                        │                                └─► faster-whisper (CPU
+                                        │                                    fallback, automatic)
+                    ┌───────────────────┼───────────────────┐
+                    ▼                   ▼                   ▼
+                 console            overlay.py         wsserver.py ──► browser control panel
+                                    (Tk captions)      (HTTP + WS)      (settings, meters, export)
 ```
+
+All three outputs subscribe to the same event stream, and only the browser can
+talk back. `settings.py` declares every option once — the CLI flags, the web
+form and the validation are all generated from it.
 
 ## Features
 
-- Live transcription of system audio via **WASAPI loopback of any output device** (headset, speakers - no Stereo Mix needed), or classic Stereo Mix / mic input (`--capture input`).
+- Live transcription of system audio via **WASAPI loopback of any output device** (headset, speakers - no Stereo Mix needed), classic Stereo Mix / mic input (`--capture input`), a **WAV file**, or audio **streamed from a browser** (a phone in the room, a laptop elsewhere, a shared tab).
 - **GPU acceleration via whisper.cpp** — Vulkan (AMD/Intel) or CUDA (NVIDIA) — (`--backend server`).
 - Automatic backend selection with CPU fallback (`--backend auto`, default) — if the GPU server dies mid-session it drops to CPU rather than going silent, and returns to GPU on its own once the server is back.
+- **Browser control panel** (`--web`) — every one of the 60
+ options, changeable *while it runs*, with live meters, word-confidence colouring and a benchmark you can apply with one click. See [Web UI](#web-ui).
+- **Per-word confidence** — both backends report the probability of every word, so a caption that reads fluently but was a guess does not look like one the model was sure of. It also makes `.srt` / `.vtt` export possible from any session.
 - Optional translation to English (`--translate`) — passed per-request, no server restart needed.
 - Optional **spoken-language pinning** (`--language ms`) — skips per-buffer auto-detection, which can otherwise disagree with itself on short or noisy windows.
 - **Silero voice-activity detection** — buffers with no speech in them are skipped before inference, so fans, music and room tone stop producing hallucinated captions (and stop costing GPU time). No extra dependency; disable with `--no-vad`.
-- Live overlay at the bottom center of the screen; transparent and draggable.
-- Optional transcript saving (`--save` and `--output`).
+- **Two chunking strategies** (`--strategy`) — a sliding window with a duplicate filter, or wait-for-silence, which never cuts a word in half.
+- Live overlay at the bottom center of the screen; transparent, draggable, and fully restyleable.
+- Optional transcript saving (`--save`) as **text, JSON Lines, SubRip or WebVTT** (`--transcript-format`).
+- **Presets** — save a whole configuration as JSON and load it with `--preset`, or from the panel.
 - **Lite version**: console-only output with no arguments (`live_transcription_lite.py`).
 
 ## Requirements
@@ -62,19 +81,75 @@ pip install -r requirements.txt
 
 4. **Set up the GPU backend (recommended, AMD-friendly)** — see [SETUP_AMD.md](SETUP_AMD.md) for full details:
    - Place a whisper.cpp build — Vulkan (AMD/Intel) or CUDA (NVIDIA) — with `whisper-server.exe` and its DLLs under `_whisper.cpp\`
-   - Download [`ggml-base-q5_1.bin`](https://huggingface.co/ggerganov/whisper.cpp/tree/main) into `_models\` — this is the filename `start_whisper_server.bat` looks for by default. Any other GGML model works too; pass its filename as an argument: `start_whisper_server.bat ggml-medium-q5_0.bin`
+   - Download [`ggml-base-q5_1.bin`](https://huggingface.co/ggerganov/whisper.cpp/tree/main) into `_models\` — this is the filename `start_whisper_server.cmd` looks for by default. Any other GGML model works too; pass its filename as an argument: `start_whisper_server.cmd ggml-medium-q5_0.bin`
 
 5. **Set up the CPU fallback (optional)**
    - Place the Faster-Whisper medium model under `_models/faster-whisper-medium`
 
 6. **Start the GPU server, then run the script**
 ```bash
-start_whisper_server.bat
+start_whisper_server.cmd
 python live_transcription.py
 ```
 The server startup log should list your GPU as a Vulkan device (e.g. `ggml_vulkan: 0 = ...`) or, on a CUDA build, `ggml_cuda_init: found N CUDA devices`. Leave that window running.
 
-> **Prefer a guided setup?** Double-click `Start Transcription.vbs` (or run `run_pipeline.cmd`). It asks which script, capture mode and flags you want, then creates the venv, installs requirements, and starts the server for you.
+> **Prefer a guided setup?** Double-click `Start Transcription.vbs` (or run `run_pipeline.cmd`). It asks which script, capture mode and flags you want, then creates the venv, installs requirements, and starts the server for you. Option **[4] Web UI** skips the questions entirely and opens the control panel instead.
+
+## Web UI
+
+```bash
+python live_transcription.py --web
+```
+
+Or double-click `Start Transcription.vbs` and choose **[4] Web UI**, which is
+the same thing with the environment set up for you first. A browser opens on
+`http://127.0.0.1:8770`.
+
+The panel is not a subset of the command line — it is the *same* option set. Both
+are generated from one schema in [`settings.py`](settings.py), so every flag is a
+control in the browser, with its help text, its bounds, and a marker saying what
+changing it will rebuild. Adding an option to `settings.py` makes it appear in
+both with no further edit.
+
+What that buys over the console:
+
+- **Change your mind without restarting.** Language, translation, buffer, slide,
+  VAD thresholds, decode parameters, the overlay's font and colours, even the
+  capture device — the pipeline rebuilds only the component a change touches.
+  The old guided launcher fixed all of it at startup, and could reach seven flags.
+- **Benchmark, then apply.** `benchmark.py` has always printed
+  `RECOMMENDED: --buffer 16 --slide 7` — and the launcher had no way to pass
+  either one on. The panel runs the same benchmark on the backend that is
+  actually serving and applies the result to the running session with a button.
+- **See why nothing is happening.** A live level meter and a speech-frame meter
+  with the threshold marked, so "no captions" separates into *the capture device
+  is wrong*, *it is below the silence threshold*, or *Silero does not hear speech
+  in it* — each with the setting that fixes it.
+- **Word confidence.** Words the model was unsure about are coloured and
+  underlined. Hover for the number.
+- **Devices in a dropdown**, not a console prompt you have to answer before the
+  program will start.
+- **A model switcher.** When inference falls behind real time, the panel lists
+  the GGML models in `_models\` and offers to restart `whisper-server` with a
+  smaller one.
+- **Export any session** as `.txt`, `.jsonl`, `.srt` or `.vtt`, whether or not
+  you remembered to turn saving on — the word timings are already there.
+- **Presets**, saved and loaded by name.
+- **Browser audio.** Set capture to *This browser* and the page streams your
+  microphone or a shared tab to the pipeline, so the machine doing the
+  transcribing does not have to be the machine hearing the sound.
+
+### Reaching it from another device
+
+```bash
+python live_transcription.py --web --web-host 0.0.0.0 --web-token some-secret
+```
+
+Then open `http://<this-machine>:8770/?token=some-secret`. The listener binds to
+`127.0.0.1` with no token by default; set one before exposing it, because the
+panel shows the transcript and changes settings. Options that would let a page
+move the listener or point the model path elsewhere are refused from the browser
+regardless.
 
 ## Usage
 
@@ -172,6 +247,37 @@ Treat the result as a starting point, not a verdict. The benchmark runs on an ot
 | `--vad-min-speech-ms` | `250` | How much speech a buffer needs before it is transcribed. Lower it (try `60`) to caption sung vocals |
 | `--vad-model` | bundled | Path to a `silero_vad*.onnx`; defaults to the one shipped with Faster-Whisper |
 
+Everything above still means exactly what it did. What follows is new.
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--web` | off | Serve the browser control panel — see [Web UI](#web-ui) |
+| `--web-host` / `--web-port` | `127.0.0.1` / `8770` | Where the panel listens. Set a token before leaving localhost |
+| `--web-token` | none | Required as `?token=...` once set |
+| `--no-web-open` | off | Do not open a browser on start |
+| `--device` | system default | Capture device id or index, so nothing has to be answered at a console prompt. `--list-devices` prints them |
+| `--file` | — | Transcribe a 16-bit PCM WAV (`--capture file`). `--file-fast` feeds it as fast as the backend takes it |
+| `--strategy` | `sliding_window` | `sliding_window` (overlap + duplicate filter) or `silence_at_end_of_chunk` (wait for a pause, never cut a word) |
+| `--chunk-length` / `--chunk-offset` / `--chunk-max-length` | `5` / `0.4` / `20` | Wait-for-silence tuning: minimum chunk, trailing quiet required, and the force-cut that stops a continuous talker producing nothing |
+| `--dedup-threshold` | `0.80` | How alike two windows must read before the second is dropped as an overlap repeat |
+| `--transcript-format` | `txt` | `txt` / `jsonl` / `srt` / `vtt` |
+| `--no-word-timestamps` | off | Stop asking for per-word probability (it costs a little time) |
+| `--confidence-warn` | `0.60` | Words below this are flagged in the panel |
+| `--initial-prompt` | — | Vocabulary hint — names, jargon and spellings the model keeps getting wrong |
+| `--beam-size` / `--best-of` | backend default | Higher is more accurate and measurably slower |
+| `--audio-ctx` | full | Truncates the encoder context. The cheapest speed lever the GPU server has — `768` measured ~15% faster. Server backend only |
+| `--temperature` / `--temperature-inc` | `0.0` / `0.2` | Decode temperature and its fallback step |
+| `--no-speech-thold` | `0.6` | Whisper's own "was that speech" guard, after the Silero gate |
+| `--suppress-nst` | off | Block music-cue / applause / `[BLANK_AUDIO]` tokens. Server backend only |
+| `--max-context` | `-1` | Tokens of the previous window carried in as context. `0` makes windows independent. Server backend only |
+| `--no-language-probabilities` | off | Skip the runner-up language list; measurably faster per request |
+| `--overlay-font` / `--overlay-font-size` / `--overlay-fg` / `--overlay-bg` / `--overlay-opacity` / `--overlay-lines` / `--overlay-width` / `--overlay-y` / `--overlay-clear-after` / `--overlay-locked` / `--overlay-no-bold` | see `--help` | The overlay's appearance, previously hardcoded |
+| `--preset` / `--save-preset` | — | Load or write a JSON preset. Flags you type still win over a preset |
+| `--list-devices` | — | Print this machine's capture devices and exit |
+
+`python live_transcription.py --help` is generated from the same schema, so it is
+always the complete list.
+
 ## Notes
 
 - **`--backend auto` recovers on its own.** If the GPU server stops answering, the script keeps trying for 5 consecutive passes (~10 s) — a single dropped request is a hiccup, not a dead server — then loads the CPU model and carries on, printing one line. While on CPU it re-checks the server once a minute with a 3-second probe and switches back on the first answer, again one line. The CPU model is only ever loaded the moment it is actually needed, so a session that never loses its server pays nothing for this. `--backend server` and `--backend local` are left alone; they mean what they say.
@@ -182,7 +288,13 @@ Treat the result as a starting point, not a verdict. The benchmark runs on an ot
 - **Loud music drowns out speech for the VAD too**, not just for you. Mixing real speech with real music at known ratios, frames over the threshold per 4-second window: speech alone `69`, speech 6 dB *above* the music `75`, equal `59`, but music 6 dB *louder* than the speech drops it to `8` — right at the default cutoff — and 10 dB louder gives `7`. So a podcast over a loud backing track can be rejected as if nobody were talking. Pick **Music** in the launcher (or `--vad-min-speech-ms 60`) when that is your source.
 - **Do not swap in a model from the silero-vad repo.** The one bundled with Faster-Whisper is the `h`/`c` export and it is *better* on exactly the hard case: at 6 dB of music over speech it scores a median 8 frames per window against 2 for the repo's `silero_vad.onnx`, and at 10 dB it scores 7 against 0. The repo's exports are marginally better on clean speech (median 80 vs 69) and clearly worse once music is involved. `--vad-model` exists for genuinely newer models, not for this swap.
 - **Bigger buffers are not slower.** Whisper always encodes a padded 30-second window, so a 4-second buffer costs about what a 16-second one costs — measured on one machine: 3.89 s versus 3.70 s. That inverts the usual intuition: a small buffer is not the low-latency choice, it is just the one most likely to fall behind and start dropping audio. Run `benchmark.py` rather than guessing, and keep `--buffer` at or under 30.
-- Overlay defaults to **center-bottom of the screen**.
+- **A real song settles what the "Music" preset can and cannot do.** Captured 45 s of music through this project's own loopback path — a song with sung vocals, which Whisper transcribed correctly at 92% language confidence. Silero scores those vocals at **0 frames in 9 of 11 windows**. Even `--vad-min-speech-ms 32`, the lowest there is, admits only 2 of 11. So for heavily-produced vocals no frame count works, and the note below applies: with no speech frames at all there is nothing to count, and `--no-vad` is the only way through. The ASR is not the limitation — the gate is, on purpose. Real music also confirms the mixing numbers: windows passing the default gate are 8/8 with music 6 dB quieter than the speech, 8/8 at equal, **2/8** with music 6 dB louder, and 0/8 at 10 dB louder.
+- **The bundled Silero export could caption a backing track; v6.2 does not.** `_models\silero_vad_v6.2.onnx` ships with the project and is preferred automatically over the one packaged inside faster-whisper. On that same song the bundled export scored one window at **11** frames — over the default 8-frame gate — where v6.2 never exceeds **2**. It also drops fan hum from 2 false-positive frames to 0, and more than doubles its score on speech buried under hum 6 dB louder (61 → 141), while leaving clean speech and room tone unchanged. Full tables in [UPSTREAM_MINING.md](UPSTREAM_MINING.md).
+- **`--vad-min-silence-ms` below 250 ms does nothing.** It decides when a gap counts as the talker stopping rather than drawing breath, and it is what `silence_at_end_of_chunk` cuts on. Segments found in a 49 s sample whose sentences number six: 100 ms → 13, 160 ms → 13, 250 ms → 13, **400 ms → 6**, 500 ms → 6, 800 ms → 5, 1200 ms → 1. This speaker leaves about 0.3 s between words and 0.85 s between sentences, so the useful setting sits between those; 400 ms is the default for that reason, and a faster talker needs less.
+- **Your whisper-server build crashes on very short audio.** A 16-sample buffer segfaults it (exit 139); 100 samples and up survive. That is whisper.cpp #3956, fixed upstream on 2026-08-06 — the prebuilt binary in `_whisper.cpp\` predates it. Nothing in the app sends buffers that short, and `ServerBackend` now refuses anything under a quarter second regardless, so no code path can take the server down. Rebuilding whisper.cpp from a current checkout fixes it properly.
+- **An English-only model reports a random language.** `ggml-*.en` models have no language tokens, so there is nothing for `--language auto` to detect with — but whisper-server answers the question anyway. Measured on `ggml-small.en-q5_1` with 11 seconds of clear English: all 100 entries in `language_probabilities` come back as `0.01002`, and the winner is reported as **`serbian`**. Without a guard that label rides along on every caption and changes from window to window, which looks exactly like the real "auto-detect wandered" problem — except no setting can fix it. This is now detected from the flatness of the distribution (not the file name, which is not in the response), captions are labelled `en`, and one line says so. Load a multilingual model if you actually need detection.
+- **`--audio-ctx` is the cheapest speed lever the GPU server has.** It truncates the encoder's context; `768` measured about 15% faster than the full 1500 on the reference machine, for a model that was otherwise holding pace only just. Too low starts costing accuracy, so move it in steps and watch the confidence colouring in the panel.
+- Overlay defaults to **center-bottom of the screen**, and everything about its appearance is now a setting rather than a constant.
 - Use `Ctrl+C` in the console to stop transcription.
 - The W5500 (8 GB VRAM) handles `medium-q5_0` comfortably; if Vulkan fails to initialize, update your GPU driver (Vulkan 1.2+ required by recent whisper.cpp builds).
 
@@ -191,26 +303,44 @@ Treat the result as a starting point, not a verdict. The benchmark runs on an ot
 ```
 project/
 │
-├─ live_transcription.py         # Main script with overlay and optional saving
-├─ live_transcription_lite.py    # Console-only version
-├─ whisper_backends.py           # Backend abstraction: whisper-server (GPU) / faster-whisper (CPU)
+├─ live_transcription.py         # Console entry point: device prompt, then App
+├─ live_transcription_lite.py    # Minimal console-only version, unchanged
+├─ app.py                        # Wires pipeline + overlay + web panel together
+│
+├─ settings.py                   # EVERY option, declared once. The CLI, the web
+│                                #   form and the validation are generated from it
+├─ pipeline.py                   # The worker loop, reconfigurable while running
+├─ audio_sources.py              # loopback / recording device / browser / WAV
+├─ speech_gate.py                # Silero VAD: is there speech, and where did it stop
+├─ buffering.py                  # Sliding window, or wait-for-silence
+├─ whisper_backends.py           # whisper-server (GPU) / faster-whisper (CPU) / auto
+├─ transcript.py                 # txt / jsonl / srt / vtt writers
+├─ overlay.py                    # The Tk caption strip, fully restyleable
+├─ wsserver.py                   # RFC 6455 + static HTTP, standard library only
 ├─ benchmark.py                  # Times inference, recommends --buffer / --slide
-├─ speech_gate.py                # Silero VAD: skip buffers with no speech in them
-├─ start_whisper_server.bat      # Launches whisper.cpp GPU server (Vulkan/CUDA)
-├─ run_pipeline.cmd              # Guided launcher: venv + server + script, with prompts
-├─ Start Transcription.vbs       # Double-click shortcut for run_pipeline.cmd
+│
+├─ webui/                        # The control panel (served, not opened as a file)
+│  ├─ index.html  app.js  style.css  audio-worklet.js  favicon.svg
+│
+├─ Start Transcription.vbs       # ← START HERE. Double-click shortcut for the launcher
+├─ run_pipeline.cmd              # THE launcher: venv + requirements + server + script
+├─ start_whisper_server.cmd      # One component: the whisper.cpp GPU server
+├─ presets/                      # Saved configurations (JSON)
 ├─ SETUP_AMD.md                  # AMD GPU setup walkthrough (CUDA note for NVIDIA inside)
+├─ UPSTREAM_MINING.md            # What was mined from faster-whisper and whisper.cpp
 ├─ requirements.txt
 ├─ README.md
 ├─ _whisper.cpp/                 # whisper.cpp binaries (Vulkan or CUDA build)
 └─ _models/
-   ├─ ggml-base-q5_1.bin        # GGML model for whisper-server (GPU), default
+   ├─ ggml-base-q5_1.bin         # GGML model for whisper-server (GPU), default
    └─ faster-whisper-medium/     # Faster-Whisper model (CPU fallback)
 ```
 
+Note that `requirements.txt` is unchanged: the web panel adds no dependency.
+
 ## Models
 
-- **GPU (whisper-server):** `ggml-base-q5_1.bin` from [ggerganov/whisper.cpp on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main) is the default. Other sizes work too (`medium`, `large-v3-turbo`, ...) — drop the file in `_models\` and pass its filename: `start_whisper_server.bat ggml-medium-q5_0.bin`. Smaller/more-quantized models transcribe faster, which matters: if inference takes longer than `--slide`, the script starts skipping audio to stay live.
+- **GPU (whisper-server):** `ggml-base-q5_1.bin` from [ggerganov/whisper.cpp on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main) is the default. Other sizes work too (`medium`, `large-v3-turbo`, ...) — drop the file in `_models\` and pass its filename: `start_whisper_server.cmd ggml-medium-q5_0.bin`. Smaller/more-quantized models transcribe faster, which matters: if inference takes longer than `--slide`, the script starts skipping audio to stay live.
 - **CPU (Faster-Whisper):** medium model recommended (`int8`). Path configurable via `--model`.
 
 ## Useful Links

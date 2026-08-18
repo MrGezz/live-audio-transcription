@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Live Transcription">
+  <title>Live Transcription</title>
+  <!-- Same construction as the IcZ site favicon: accent tile, glyph knocked out
+       in the page background, drawn as paths rather than text because a favicon
+       renders in the browser's own context where no font-family is guaranteed.
+       A microphone plus three level bars, so it still reads as "listening" at
+       the 16px tab size where detail disappears. -->
+  <rect width="64" height="64" rx="14" fill="#00BCD4"/>
+  <g fill="#0B1013">
+    <rect x="26" y="10" width="12" height="24" rx="6"/>
+    <path d="M20 30 a12 12 0 0 0 24 0 h5 a17 17 0 0 1 -14.5 16.8 V54 h6 v5 H23.5 v-5 h6 v-7.2 A17 17 0 0 1 15 30 Z"/>
+    <rect x="4"  y="26" width="4" height="12" rx="2"/>
+    <rect x="56" y="26" width="4" height="12" rx="2"/>
+  </g>
+</svg>

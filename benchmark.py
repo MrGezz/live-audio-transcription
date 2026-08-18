@@ -312,7 +312,7 @@ def main():
         print("")
         print(" Options, in order of effect:")
         print("   1. Use a smaller/more-quantized model - the single biggest lever.")
-        print("      start_whisper_server.bat ggml-base-q5_1.bin   (or a tiny build)")
+        print("      start_whisper_server.cmd ggml-base-q5_1.bin   (or a tiny build)")
         if ended_on == "local":
             print("   2. Start the GPU server: this run measured the CPU fallback.")
         else:
