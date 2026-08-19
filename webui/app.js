@@ -351,7 +351,7 @@ function makeField(f) {
 
 function fillChoices(select, f) {
   const want = choicesFor(f);
-  const sig = want.map(c => c.value + ' ' + c.label).join('');
+  const sig = want.map(c => c.value + '\u0000' + c.label).join('\u0001');
   if (select.dataset.sig === sig) return;
   select.dataset.sig = sig;
   select.innerHTML = '';
