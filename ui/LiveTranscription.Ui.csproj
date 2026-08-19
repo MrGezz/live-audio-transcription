@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The desktop panel's View layer. This assembly knows nothing about Python:
+    it talks to IEngineBridge, which Python implements (wpf_panel.py). That is
+    what keeps the XAML bindable - pythonnet projects a Python class as a CLR
+    type with ZERO properties, so {Binding} against a Python object silently
+    renders an empty string. ViewModels therefore have to be C#.
+
+    Library, not WinExe: the process is python.exe. PanelHost.Start() is the
+    entry point, called over pythonnet from a .NET-created STA thread.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>LiveTranscription.Ui</AssemblyName>
+    <RootNamespace>LiveTranscription.Ui</RootNamespace>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!--
+      net8.0-windows, not net10: 8.0 is the lowest Desktop runtime that ships
+      WPF-UI 4.3.0's target, so a cloner needs only Microsoft.WindowsDesktop.App
+      8.0 - which rolls forward to 10 if that is all they have. Building
+      against 10 would REQUIRE 10.
+    -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <Version>0.1.0</Version>
+
+    <!--
+      A Library does NOT get a runtimeconfig.json by default - only executables
+      do - but pythonnet needs one to host the CLR, and it must name
+      Microsoft.WindowsDesktop.App. clr_loader's auto-generated config filters
+      to Microsoft.NETCore.App, which contains no WPF, so hosting without this
+      file fails with FileNotFoundException on PresentationFramework.
+      Generating it here rather than hand-writing one keeps the framework
+      version tied to TargetFramework instead of drifting from it.
+    -->
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+    <RollForward>LatestMinor</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      From nuget.org by package id, never a ProjectReference to a checkout.
+      Two reasons: every path in this project stays relative to the repo root
+      so the folder can be moved or cloned, and a local wpfui clone is liable
+      to sit some commits past its tag - silent version drift.
+    -->
+    <PackageReference Include="WPF-UI" Version="4.3.0" />
+  </ItemGroup>
+
+</Project>

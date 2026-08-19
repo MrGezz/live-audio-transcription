@@ -34,6 +34,28 @@
 .gitignore     text eol=lf
 .editorconfig  text eol=lf
 
+# ---- The desktop panel's C# / XAML sources ----
+# No eol pin: MSBuild, the C# compiler and the XAML parser all read either,
+# and Visual Studio writes whatever the file already has. text=auto above
+# normalises them in the repo, which is all that is wanted.
+*.cs       text diff=csharp
+*.xaml     text
+*.csproj   text
+*.props    text
+*.targets  text
+*.ruleset  text
+# Solution files are the exception - Visual Studio rewrites them with CRLF on
+# every save, so pinning avoids a whole-file diff each time one is opened.
+*.sln      text eol=crlf
+
+# ---- Generated, not authored ----
+# Charcoal.xaml is ~400 brush overrides emitted by ui/tools/gen_theme.py from
+# the live WPF-UI dictionary. Collapsing it keeps a theme regeneration from
+# burying a real change in a review, and keeps it out of language stats.
+ui/Themes/Charcoal.xaml       linguist-generated=true
+ui/Themes/CharcoalLight.xaml  linguist-generated=true
+ui/runtime/**                 linguist-generated=true
+
 # ---- Binaries: never munge, never try to diff ----
 *.bin   binary
 *.exe   binary
@@ -47,6 +69,10 @@
 *.mp3   binary
 *.pt    binary
 *.onnx  binary
+*.pdb   binary
+*.nupkg binary
+*.ttf   binary
+*.woff2 binary
 
 # ---- Keep release archives lean ----
 .gitattributes  export-ignore

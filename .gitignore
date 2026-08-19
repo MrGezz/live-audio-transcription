@@ -59,3 +59,31 @@ my_transcript.txt
 
 # Saved presets are personal setups; the folder is kept, its contents are not.
 presets/*.json
+
+# ============================================================
+#  Desktop panel (ui/) - .NET
+#
+#  ui/runtime IS committed, deliberately. It is 6.4 MB of publish output and
+#  it is what lets a fresh clone run the panel with only the .NET Desktop
+#  runtime - no SDK, no NuGet restore, no network. The alternative is a fetch
+#  script that costs every cloner the SDK. Re-run build_ui.cmd and commit the
+#  result after changing anything under ui/.
+#
+#  Everything else .NET produces is per-machine and must stay out.
+# ============================================================
+ui/bin/
+ui/obj/
+ui/**/bin/
+ui/**/obj/
+
+# Debug symbols: per-build, and of no use to someone running the panel.
+ui/runtime/*.pdb
+
+# Visual Studio / Rider per-user state.
+.vs/
+*.user
+*.suo
+*.userprefs
+
+# Default output of ui/tools/shot.py when no path is given.
+/panel.png
