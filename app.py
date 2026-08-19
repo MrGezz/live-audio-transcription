@@ -790,8 +790,17 @@ class App(object):
             except Exception:
                 continue
             was, self._engine = self._engine, fresh
+            # "models" is in here because dropping a .bin into _models is a
+            # thing you do WHILE the panel is open - you go find a smaller
+            # model precisely because the perf line said the current one cannot
+            # hold pace. Without it the dropdown stayed stale until something
+            # unrelated changed, and the file you just downloaded looked like
+            # it had not arrived. Re-broadcasting is cheap: fillEngineModels
+            # keeps a signature of the list and returns early when it matches,
+            # so an unchanged list costs one string compare in the browser.
             if any(was.get(k) != fresh.get(k)
-                   for k in ("reachable", "pid", "image", "url", "canStart")):
+                   for k in ("reachable", "pid", "image", "url", "canStart",
+                             "models")):
                 self._broadcast_engine()
                 if fresh["reachable"] and not was.get("reachable"):
                     self._backend_may_be_back()

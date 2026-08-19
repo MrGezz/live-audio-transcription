@@ -16,7 +16,7 @@ set WHISPER_DIR=%~dp0_whisper.cpp
 REM  Override the model by passing a filename from _models\ as argument 1:
 REM    start_whisper_server.cmd ggml-base-q5_1.bin
 set MODEL=%~dp0_models\%~1
-if "%MODEL%"=="%~dp0_models\" set MODEL=%~dp0_models\ggml-small.en-q5_1.bin
+if "%MODEL%"=="%~dp0_models\" set MODEL=%~dp0_models\ggml-base-q5_1.bin
 set HOST=127.0.0.1
 set PORT=8080
 
