@@ -51,6 +51,7 @@
       to sit some commits past its tag - silent version drift.
     -->
     <PackageReference Include="WPF-UI" Version="4.3.0" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
 </Project>

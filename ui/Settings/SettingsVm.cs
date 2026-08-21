@@ -1,0 +1,604 @@
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
+using System.Windows.Threading;
+using LiveTranscription.Ui.Bridge;
+using LiveTranscription.Ui.ViewModels;
+
+namespace LiveTranscription.Ui.Settings;
+
+/// <summary>
+/// The whole settings pane: 8 groups, 60 fields, generated from the schema.
+/// </summary>
+/// <remarks>
+/// <para>
+/// This class is the reason the View layer is C# rather than Python. pythonnet
+/// projects a Python object as a CLR type with zero properties, so
+/// <c>{Binding}</c> against one renders an empty string silently - and a pane
+/// that is generated entirely by binding cannot be built on top of that.
+/// </para>
+/// <para>
+/// The invariant to protect: adding a <c>Field(...)</c> to settings.py must
+/// make a control appear here with no edit to any C# or XAML file. Anything
+/// that special-cases a key by name is a hole in that, and there is exactly
+/// one such hole - <c>model</c>, see <see cref="SetModels"/> - which is
+/// inherited from the browser panel so the two agree.
+/// </para>
+/// </remarks>
+public sealed class SettingsVm : ViewModelBase
+{
+    /// <summary>
+    /// Every kind the templates cover. Checked against the LIVE schema at
+    /// startup so an eighth kind fails loudly instead of silently rendering
+    /// as a TextBox that writes the wrong JSON type.
+    /// </summary>
+    public static readonly string[] KnownKinds =
+    {
+        "bool", "int", "float", "choice", "str", "path", "color",
+    };
+
+    /// <summary>
+    /// How long after the last keystroke or slider move the patch goes.
+    /// </summary>
+    /// <remarks>
+    /// The browser panel uses 60 ms and ONE shared timer for all fields, which
+    /// has the effect that editing two fields inside 60 ms drops the first
+    /// edit entirely. Here every edit lands in <see cref="_pending"/> and the
+    /// timer only decides when to flush, so a longer window costs nothing and
+    /// buys a dragged slider one patch instead of forty.
+    /// </remarks>
+    private const int DebounceMs = 250;
+
+    private readonly IEngineBridge _bridge;
+    private readonly Action<string, string, string> _toast;
+    private readonly Dictionary<string, FieldVm> _byKey = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, JsonElement> _live = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, JsonElement> _pending = new(StringComparer.Ordinal);
+    private readonly DispatcherTimer _debounce;
+
+    private IReadOnlyList<ChoiceVm> _languages = Array.Empty<ChoiceVm>();
+    private Doc _devices = Doc.None;
+    private Doc _models = Doc.None;
+    private bool _showAdvanced;
+    private string _search = "";
+    private string _rebuildNote = "";
+    private bool _loaded;
+
+    /// <param name="toast">severity, title, message - shown to the user.</param>
+    public SettingsVm(IEngineBridge bridge, Dispatcher dispatcher,
+                      Action<string, string, string> toast)
+    {
+        _bridge = bridge;
+        _toast = toast;
+        _debounce = new DispatcherTimer(DispatcherPriority.Background, dispatcher)
+        {
+            Interval = TimeSpan.FromMilliseconds(DebounceMs),
+        };
+        _debounce.Tick += (_, _) => Flush();
+    }
+
+    public ObservableCollection<GroupVm> Groups { get; } = new();
+
+    public ObservableCollection<string> Presets { get; } = new();
+
+    public bool IsLoaded
+    {
+        get => _loaded;
+        private set => Set(ref _loaded, value);
+    }
+
+    /// <summary>The 19 advanced fields are hidden until this is on.</summary>
+    public bool ShowAdvanced
+    {
+        get => _showAdvanced;
+        set { if (Set(ref _showAdvanced, value)) { Refilter(); } }
+    }
+
+    public string Search
+    {
+        get => _search;
+        set { if (Set(ref _search, value ?? "")) { Refilter(); } }
+    }
+
+    /// <summary>
+    /// What the last edit is about to rebuild, in a sentence, or "".
+    /// </summary>
+    /// <remarks>
+    /// Changing the backend takes seconds to load a CPU model, and changing
+    /// the capture device silently re-opens the device. Without a line saying
+    /// so, both look like the panel ignoring the click.
+    /// </remarks>
+    public string RebuildNote
+    {
+        get => _rebuildNote;
+        private set { if (Set(ref _rebuildNote, value ?? "")) { Raise(nameof(HasRebuildNote)); } }
+    }
+
+    public bool HasRebuildNote => _rebuildNote.Length > 0;
+
+    // ---- building from the schema ----------------------------------------
+
+    /// <summary>
+    /// Build the pane. Called once, with <c>settings.schema_json()</c>.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// A field kind that no template covers. Deliberately fatal at startup
+    /// rather than a control that renders as the wrong thing: a float that
+    /// draws as a TextBox still LOOKS editable, and writes a string into a
+    /// setting the engine will coerce or reject at some later, unrelated
+    /// moment.
+    /// </exception>
+    public void LoadSchema(string schemaJson)
+    {
+        Doc schema = Doc.Parse(schemaJson);
+        if (!schema.Exists)
+        {
+            _toast("Error", "Settings unavailable",
+                   "The engine did not return a readable settings schema.");
+            return;
+        }
+
+        var locked = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Doc k in schema["remoteLocked"].Items())
+        {
+            locked.Add(k.Str());
+        }
+
+        var languages = new List<ChoiceVm>();
+        foreach (Doc l in schema["languages"].Items())
+        {
+            languages.Add(new ChoiceVm(l["value"].Str(), l["label"].Str()));
+        }
+
+        _languages = languages;
+
+        var fields = new List<FieldVm>();
+        var unknown = new List<string>();
+        foreach (Doc f in schema["fields"].Items())
+        {
+            var vm = new FieldVm(f);
+            if (Array.IndexOf(KnownKinds, vm.Kind) < 0)
+            {
+                unknown.Add(vm.Key + " (" + vm.Kind + ")");
+                continue;
+            }
+
+            vm.LocalOnly = locked.Contains(vm.Key);
+            vm.Edited += OnFieldEdited;
+            fields.Add(vm);
+            _byKey[vm.Key] = vm;
+        }
+
+        if (unknown.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "settings.py has field kinds this panel has no template for: "
+                + string.Join(", ", unknown)
+                + ". Add a DataTemplate to Views/FieldTemplates.xaml, a case to "
+                + "FieldTemplateSelector, and the kind to SettingsVm.KnownKinds.");
+        }
+
+        Groups.Clear();
+        int index = 0;
+        foreach (Doc g in schema["groups"].Items())
+        {
+            // The first four open, like the browser panel: the audio, chunking,
+            // gate and transcription groups are the ones anyone actually
+            // touches, and eight expanded groups is a page of scrolling before
+            // the first control.
+            var group = new GroupVm(g["key"].Str(), g["label"].Str(),
+                                    g["help"].Str(), expanded: index < 4);
+            foreach (FieldVm f in fields)
+            {
+                if (string.Equals(f.Group, group.Key, StringComparison.Ordinal))
+                {
+                    group.Fields.Add(f);
+                }
+            }
+
+            if (group.Fields.Count > 0)
+            {
+                Groups.Add(group);
+            }
+
+            index++;
+        }
+
+        IsLoaded = true;
+        Refilter();
+    }
+
+    // ---- values from the engine -------------------------------------------
+
+    /// <summary>Take the full settings document and re-hydrate every field.</summary>
+    public void HydrateSettings(string settingsJson)
+    {
+        Doc doc = Doc.Parse(settingsJson);
+        if (!doc.Exists)
+        {
+            return;
+        }
+
+        foreach (KeyValuePair<string, Doc> kv in doc.Fields())
+        {
+            _live[kv.Key] = kv.Value.Element;
+            if (_byKey.TryGetValue(kv.Key, out FieldVm? f))
+            {
+                f.Hydrate(kv.Value.Element);
+            }
+        }
+
+        // capture drives which device list the device field offers, so a
+        // settings echo can change the CONTENTS of a dropdown, not just its
+        // selection.
+        RefreshDeviceChoices();
+        Refilter();
+    }
+
+    /// <summary>
+    /// The result of an <c>ApplySettings</c> call: <c>{changed, errors}</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>errors</c> is a flat list of human sentences, NOT keyed by field -
+    /// settings.validate builds them with the values already interpolated in.
+    /// So a rejected field cannot be identified from the error text; it is
+    /// identified by ABSENCE, as a key that was sent and did not come back in
+    /// <c>changed</c>.
+    /// </para>
+    /// <para>
+    /// The absence test is safe against the case where a field was set to the
+    /// value it already held - <c>Pipeline.apply</c> filters those out of
+    /// <c>changed</c> too, but snapping such a field back to its last good
+    /// value is a no-op by definition.
+    /// </para>
+    /// <para>
+    /// <c>changed</c> can also contain keys that were never sent:
+    /// settings.validate turns word_timestamps on by itself when the format
+    /// becomes srt or vtt. Those are applied here, so the checkbox ticks
+    /// itself and the user can see it happen.
+    /// </para>
+    /// </remarks>
+    public void ApplyAck(string ackJson)
+    {
+        Doc ack = Doc.Parse(ackJson);
+        Doc changed = ack["changed"];
+
+        var accepted = new HashSet<string>(StringComparer.Ordinal);
+        foreach (KeyValuePair<string, Doc> kv in changed.Fields())
+        {
+            accepted.Add(kv.Key);
+            _live[kv.Key] = kv.Value.Element;
+            if (_byKey.TryGetValue(kv.Key, out FieldVm? f))
+            {
+                f.Hydrate(kv.Value.Element);
+            }
+        }
+
+        var messages = new List<string>();
+        foreach (Doc e in ack["errors"].Items())
+        {
+            messages.Add(e.Str());
+        }
+
+        if (messages.Count > 0)
+        {
+            foreach (string key in _sentKeys)
+            {
+                if (!accepted.Contains(key)
+                    && _byKey.TryGetValue(key, out FieldVm? f))
+                {
+                    f.SnapBack(messages[0]);
+                }
+            }
+
+            _toast("Error",
+                   messages.Count == 1 ? "That setting was refused"
+                                       : messages.Count + " settings were refused",
+                   string.Join("\n", messages));
+        }
+
+        _sentKeys.Clear();
+        Refilter();
+    }
+
+    /// <summary>Fill the device dropdown from a fresh enumeration.</summary>
+    public void SetDevices(string devicesJson)
+    {
+        _devices = Doc.Parse(devicesJson);
+        RefreshDeviceChoices();
+    }
+
+    /// <summary>
+    /// Fill the faster-whisper model list.
+    /// </summary>
+    /// <remarks>
+    /// <c>model</c> is declared in settings.py as a <c>path</c>, because on the
+    /// command line it is one. In a panel it is a picker over what is actually
+    /// in _models, and this is the one place a key is special-cased by name.
+    /// webui/app.js:381 does the same thing for the same reason; the two
+    /// panels disagreeing about what the model field IS would be worse than
+    /// the special case.
+    /// </remarks>
+    public void SetModels(string modelsJson)
+    {
+        _models = Doc.Parse(modelsJson);
+        if (!_byKey.TryGetValue("model", out FieldVm? model))
+        {
+            return;
+        }
+
+        var list = new List<ChoiceVm>();
+        foreach (Doc m in _models["faster_whisper"].Items())
+        {
+            list.Add(new ChoiceVm(m["path"].Str(), m["name"].Str(m["path"].Str())));
+        }
+
+        model.SetDynamicChoices(list);
+    }
+
+    public void SetPresets(string presetsJson)
+    {
+        Doc doc = Doc.Parse(presetsJson);
+        Presets.Clear();
+
+        // Tolerated in two shapes because _list_presets returns a bare list
+        // and the preset acks carry it under a "presets" key.
+        Doc list = doc.Kind == JsonValueKind.Array ? doc : doc["presets"];
+        foreach (Doc p in list.Items())
+        {
+            Presets.Add(p.Kind == JsonValueKind.String ? p.Str() : p["name"].Str());
+        }
+    }
+
+    private void RefreshDeviceChoices()
+    {
+        foreach (FieldVm f in _byKey.Values)
+        {
+            if (!string.Equals(f.ChoiceSource, "devices", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            f.SetDynamicChoices(DeviceChoices());
+        }
+
+        foreach (FieldVm f in _byKey.Values)
+        {
+            if (string.Equals(f.ChoiceSource, "languages", StringComparison.Ordinal)
+                && f.Choices.Count == 0)
+            {
+                f.SetDynamicChoices(_languages);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The device list for the CURRENT capture mode.
+    /// </summary>
+    /// <remarks>
+    /// Loopback devices are outputs and input devices are inputs; offering
+    /// both at once produces a list in which half the entries cannot work and
+    /// nothing says which half. Mirrors webui/app.js:366 choicesFor.
+    /// </remarks>
+    private List<ChoiceVm> DeviceChoices()
+    {
+        string mode = _live.TryGetValue("capture", out JsonElement c)
+                      && c.ValueKind == JsonValueKind.String
+            ? c.GetString() ?? "loopback"
+            : "loopback";
+
+        var list = new List<ChoiceVm>();
+        switch (mode)
+        {
+            case "loopback":
+                list.Add(new ChoiceVm("", "(system default)"));
+                foreach (Doc d in _devices["loopback"].Items())
+                {
+                    string tail = d["default"].Bool() ? "   <- Windows default" : "";
+                    list.Add(new ChoiceVm(d["id"].Str(), d["name"].Str() + tail));
+                }
+
+                break;
+
+            case "input":
+                list.Add(new ChoiceVm("", "(system default)"));
+                foreach (Doc d in _devices["input"].Items())
+                {
+                    list.Add(new ChoiceVm(
+                        d["id"].Str(),
+                        string.Format(CultureInfo.InvariantCulture, "{0}: {1} ({2}, {3} Hz)",
+                                      d["id"].Str(), d["name"].Str(),
+                                      d["hostapi"].Str(), d["samplerate"].Int())));
+                }
+
+                break;
+
+            case "browser":
+                list.Add(new ChoiceVm("", "(streamed into the panel)"));
+                break;
+
+            default:
+                list.Add(new ChoiceVm("", "(not used for a file)"));
+                break;
+        }
+
+        return list;
+    }
+
+    // ---- edits going out ---------------------------------------------------
+
+    private readonly List<string> _sentKeys = new();
+
+    private void OnFieldEdited(FieldVm field)
+    {
+        _pending[field.Key] = field.Value;
+        RebuildNote = DescribeRebuild(field);
+
+        // Visibility can depend on the field just moved - unticking "vad"
+        // hides five fields - so the gate is re-evaluated on the edit rather
+        // than waiting for the echo to come back from the engine.
+        _live[field.Key] = field.Value;
+        Refilter();
+
+        _debounce.Stop();
+        _debounce.Start();
+    }
+
+    /// <summary>
+    /// Send everything that has been edited, in ONE call.
+    /// </summary>
+    /// <remarks>
+    /// Not one call per key, and this is not an optimisation.
+    /// settings.validate runs the cross-field rules against the whole merged
+    /// patch: <c>slide</c> may not exceed <c>buffer</c>, <c>chunk_offset</c>
+    /// must be under <c>chunk_length</c>, <c>chunk_max_length</c> may not be
+    /// under <c>chunk_length</c>. Sending buffer and slide separately means
+    /// whichever arrives first is validated against the OLD value of the other
+    /// and rejected, so a legal pair of values cannot be entered at all.
+    /// </remarks>
+    private void Flush()
+    {
+        _debounce.Stop();
+        if (_pending.Count == 0)
+        {
+            return;
+        }
+
+        var sb = new StringBuilder("{");
+        bool first = true;
+        _sentKeys.Clear();
+        foreach (KeyValuePair<string, JsonElement> kv in _pending)
+        {
+            if (!first)
+            {
+                sb.Append(',');
+            }
+
+            sb.Append(JsonSerializer.Serialize(kv.Key))
+              .Append(':')
+              .Append(kv.Value.GetRawText());
+            _sentKeys.Add(kv.Key);
+            first = false;
+        }
+
+        sb.Append('}');
+        _pending.Clear();
+
+        // ApplySettings returns the ack synchronously - it is a direct call
+        // into Pipeline.apply, not a round trip - so there is no correlation
+        // problem and _sentKeys is still the right set when it comes back.
+        ApplyAck(_bridge.ApplySettings(sb.ToString()));
+    }
+
+    /// <summary>Send anything pending right now. Used before the panel closes.</summary>
+    public void FlushNow() => Flush();
+
+    private static string DescribeRebuild(FieldVm f)
+        => f.Rebuild switch
+        {
+            "source" => f.Label + ": the capture device is being re-opened.",
+            "backend" => f.Label + ": the transcription backend is being rebuilt "
+                         + "- the CPU path takes a few seconds to load.",
+            "gate" => f.Label + ": the speech gate is being retuned.",
+            "strategy" => f.Label + ": the chunking is being rebuilt, so the "
+                          + "window in progress is dropped.",
+            "save" => f.Label + ": the transcript file is being reopened.",
+            "overlay" => f.Label + ": the overlay is being restyled.",
+            "restart" => f.Label + ": this one only takes effect when the "
+                         + "program is started again.",
+            _ => "",
+        };
+
+    // ---- filtering ----------------------------------------------------------
+
+    /// <summary>
+    /// Re-evaluate every field's visibility: showIf, the advanced filter and
+    /// the search box.
+    /// </summary>
+    public void Refilter()
+    {
+        string query = _search.Trim();
+        foreach (GroupVm g in Groups)
+        {
+            int shown = 0;
+            foreach (FieldVm f in g.Fields)
+            {
+                bool visible = (!f.Advanced || _showAdvanced)
+                               && ConditionEvaluator.IsSatisfied(f.ShowIf, _live);
+                f.IsVisible = visible;
+                f.MatchesSearch = f.Matches(query);
+                if (f.IsShown)
+                {
+                    shown++;
+                }
+            }
+
+            g.ShownCount = shown;
+            g.IsShown = shown > 0;
+
+            // A search that matches something two groups down is useless if
+            // the group is collapsed - the match is found and then hidden.
+            if (query.Length > 0 && shown > 0)
+            {
+                g.IsExpanded = true;
+            }
+        }
+    }
+
+    /// <summary>Look a field up by key. For the tests and the benchmark tab.</summary>
+    public FieldVm? Field(string key)
+        => _byKey.TryGetValue(key, out FieldVm? f) ? f : null;
+
+    /// <summary>
+    /// Apply several settings at once, as if the user had edited them.
+    /// </summary>
+    /// <remarks>
+    /// The benchmark's "use these numbers" button is the caller: it moves
+    /// strategy, buffer and slide together, which is precisely the set that
+    /// cannot be sent one at a time.
+    /// </remarks>
+    public void ApplyPatch(IReadOnlyDictionary<string, JsonElement> patch)
+    {
+        foreach (KeyValuePair<string, JsonElement> kv in patch)
+        {
+            _pending[kv.Key] = kv.Value;
+            _live[kv.Key] = kv.Value;
+        }
+
+        Flush();
+    }
+
+    // ---- presets -------------------------------------------------------------
+
+    public void SavePreset(string name)
+    {
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            SetPresets(_bridge.PresetSave(name));
+            _toast("Success", "Preset saved", name);
+        }
+    }
+
+    public void LoadPreset(string name)
+    {
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            SetPresets(_bridge.PresetLoad(name));
+            HydrateSettings(_bridge.GetSettingsJson());
+            _toast("Success", "Preset loaded", name);
+        }
+    }
+
+    public void DeletePreset(string name)
+    {
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            SetPresets(_bridge.PresetDelete(name));
+            _toast("Informational", "Preset deleted", name);
+        }
+    }
+}

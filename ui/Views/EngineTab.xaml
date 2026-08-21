@@ -1,0 +1,47 @@
+<UserControl x:Class="LiveTranscription.Ui.Views.EngineTab"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+
+    <StackPanel Margin="16" Spacing="16">
+        <!-- Whisper-Server Card -->
+        <ui:CardControl Icon="Server24" Title="Whisper Server">
+            <ui:CardControl.Subtitle>
+                <TextBlock Text="{Binding ServerState, StringFormat='State: {0}'}" />
+            </ui:CardControl.Subtitle>
+            
+            <Grid Margin="0,12,0,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Status Metadata (Port, PID, Image) -->
+                <StackPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,0,0,16">
+                    <TextBlock Text="{Binding Port, StringFormat='Port: {0}'}" Margin="0,0,16,0" Foreground="Gray"/>
+                    <TextBlock Text="{Binding Pid, StringFormat='PID: {0}'}" Margin="0,0,16,0" Foreground="Gray"/>
+                    <TextBlock Text="{Binding Image, StringFormat='Image: {0}'}" Foreground="Gray"/>
+                </StackPanel>
+
+                <!-- Model Picker -->
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Model:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <ComboBox Grid.Row="1" Grid.Column="1" 
+                          ItemsSource="{Binding AvailableModels}" 
+                          SelectedItem="{Binding SelectedModel}" 
+                          Width="200" HorizontalAlignment="Left"/>
+
+                <!-- Lifecycle Controls (Start / Restart / Stop) -->
+                <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <ui:Button Command="{Binding StartCommand}" Icon="Play24" Margin="0,0,8,0" Content="Start"/>
+                    <ui:Button Command="{Binding RestartCommand}" Icon="ArrowCounterclockwise24" Margin="0,0,8,0" Content="Restart"/>
+                    <ui:Button Command="{Binding StopCommand}" Icon="Stop24" Appearance="Danger" Content="Stop"/>
+                </StackPanel>
+            </Grid>
+        </ui:CardControl>
+    </StackPanel>
+</UserControl>

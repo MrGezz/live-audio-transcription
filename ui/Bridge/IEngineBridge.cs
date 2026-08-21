@@ -101,6 +101,39 @@ public interface IEngineBridge
     string PresetLoad(string name);
     string PresetDelete(string name);
 
+    // ---- audio in --------------------------------------------------------
+
+    /// <summary>
+    /// Hand the engine a block of captured audio: 16 kHz mono little-endian
+    /// PCM16, the same bytes the browser panel puts on its socket.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the desktop half of what <c>capture: browser</c> does, and the
+    /// reason it exists is that a browser cannot reliably give you the
+    /// speakers. <c>getUserMedia</c> is the microphone only;
+    /// <c>getDisplayMedia</c> will hand over a tab's audio, but system audio
+    /// needs a whole-screen share, is Chromium-only and is refused outright on
+    /// Firefox and Safari. WASAPI loopback has none of those conditions, so
+    /// the panel captures natively and pushes the result through here.
+    /// </para>
+    /// <para>
+    /// The array is exactly as long as the audio in it. That is not tidiness:
+    /// NAudio hands back a pooled buffer that is usually longer than the frame
+    /// it just filled, and marshalling the slack across pythonnet 30 times a
+    /// second - then trusting Python to trim it - costs more than the copy and
+    /// puts the trim on the side that cannot see the length.
+    /// </para>
+    /// <para>
+    /// Like every other method here it runs on the caller's thread and must
+    /// return promptly. <c>Pipeline.feed</c> does: it appends to a buffer under
+    /// a lock and returns, exactly as the websocket path already calls it.
+    /// </para>
+    /// </remarks>
+    /// <returns>false if nothing consumed it - the engine is not in a push
+    /// capture mode, or is stopped.</returns>
+    bool PushAudioChunk(byte[] pcm16le);
+
     // ---- misc ------------------------------------------------------------
 
     void RescanDevices();
