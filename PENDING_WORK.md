@@ -4,7 +4,10 @@ Status of the `ui/` front end. Branch `feature/ui-wpf`.
 
 **The seven steps this file used to list as remaining are done.** The panel
 has its five content tabs, is wired into `app.py` behind `--wpf`, and
-degrades to "no desktop panel" when the runtime is missing. This file stays
+degrades to "no desktop panel" when the runtime is missing. On 2026-08-23 it
+was run on real hardware for the first time — the soak (step 6) and a render
+of every tab in both themes (step 8), which found and fixed four things the
+code review had not. This file stays
 because half of it was never a to-do list: the decisions and the measurements
 that settled the arguments are recorded below so none of it has to be
 re-derived.
@@ -159,19 +162,49 @@ ends, launcher wiring (`run_pipeline.cmd` option [5], `--wpf`), and the
 graceful-degrade path: missing pythonnet or Desktop runtime prints one
 actionable line and transcription carries on.
 
-### 6. Soak — harness shipped, four-hour run still owed on real hardware
+### 6. Soak — run on real hardware 2026-08-23
 
 `ui/tools/soak.py`: synthetic meter at 8 Hz plus transcript, state, log,
 perf and engine events through the real bridge, with a Python thread
 hammering `ApplySettings` (and its settings echo — `HydrateSettings` plus
 `Refilter` over all 61 fields is the heaviest binding path the panel has).
 RSS, handle count and managed heap sampled every 30 s from the CLR itself;
-the verdict compares the last quarter against the second. The 32,000-round-
-trip boundary soak already showed RSS plateauing after round 3 and flat
-handles, so a pass is expected — but if the full run fails, the View layer
-moves behind a WebSocket client and everything after step 1 changes. Run it
-on Windows: `.venv\Scripts\python.exe ui\tools\soak.py` (or `--minutes 5`
-as the smoke version).
+the verdict compares the last quarter against the second. If the full run
+fails, the View layer moves behind a WebSocket client and everything after
+step 1 changes. Run it on Windows: `.venv\Scripts\python.exe ui\tools\soak.py`
+(or `--minutes 5` as the smoke version). Exit codes: 0 judged and passed,
+1 judged and failed, 2 not judged — a short run, an abort, or a harness that
+could not prove it did what it claims.
+
+**What the first real run taught the harness.** The original version was
+weaker than its docstring in two ways that a PASS would have hidden:
+
+- It never left the Transcript tab. A `TabControl` builds only the selected
+  tab's visuals, so the Settings pane's 61 rows, the Engine cards and the
+  500 log rows were never instantiated and the settings churn reached no
+  bindings at all. The harness now cycles `MainVm.SelectedTab` every 30 s.
+- `panel.bridge.ApplySettings(...)` is Python calling the Python object.
+  The path the panel actually uses — `FieldVm.Commit` → the 250 ms debounce
+  → `SettingsVm.Flush` → `IEngineBridge.ApplySettings`, which pythonnet
+  dispatches INTO Python on the dispatcher thread and marshals the ack back
+  — never ran. The harness now drives `FieldVm` setters on the dispatcher at
+  2 Hz (wider than the debounce, so every edit flushes), counts arrivals by
+  thread, prints the split, and refuses a verdict if the C# side never called
+  in. A 60 s sanity run: 384 hammer arrivals, 77 from C#.
+- Smaller: `status()` was constant, so every state event short-circuited
+  `Set()` and the pill/banner code never ran (it varies per tick now, with
+  the capture "dying" for one event a minute); Ctrl+C produced a verdict
+  from a partial run; 'too short' exited 0, the same as PASS.
+
+**Results.** Machine: Windows 11 Pro 26200, .NET Desktop 8.0.30, Python
+3.12 — pythonnet had to be installed into `.venv` first (requirements.txt
+lists it; the venv predated that line). Five-minute smokes of both harness
+versions passed (RSS +0.5 %, handles flat, 764 → 759). An old-harness
+four-hour run was stopped at 17 minutes once the coverage gaps above were
+proven (flat at ~254 MB / 750 handles to that point). The upgraded-harness
+four-hour run started 01:18 on 2026-08-23 against the published
+`ui/runtime` (all tabs realised: ~286 MB / ~752 handles at 17 minutes);
+its verdict: **pending at the time of writing (due ≈ 05:19)**.
 
 ### 7. Packaging and docs — done
 
@@ -179,6 +212,55 @@ README gained the Desktop panel section and the folder map; CONTRIBUTING
 gained the `build_ui.cmd`-then-commit-`ui/runtime` discipline and the bridge
 threading rules as invariants 11–13; `requirements.txt` gained
 `pythonnet>=3.1.0`.
+
+### 8. First render on real hardware (2026-08-23) — what `shot.py` found
+
+`shot.py` passes (2.7 s, a 2× PNG). Rendering every tab with a populated
+hello — `shot.py` captures only the Transcript tab with an empty stub, which
+is how the first two items survived until now — found four things:
+
+- **The Engine tab was blank.** `ui/Views/EngineTab.xaml.cs` did not exist.
+  A XAML file with an `x:Class` still gets its `InitializeComponent()`
+  generated and its BAML compiled, but nothing CALLS it, so the control
+  built, instantiated and rendered as an empty `UserControl` with no error
+  anywhere (two visual descendants against Benchmark's 217). Fixed with the
+  one-line code-behind every other view has.
+- **Every accent-derived brush was frozen transparent.** `gen_theme.py`
+  walked the WPF-UI dictionaries standalone, where a `Color` set with
+  `{DynamicResource SystemAccentColor…}` is an unresolved expression that
+  reads as `#00FFFFFF`, and the name filter (`"Accent" in key`) only ever
+  saw the three keys with Accent in the name. 36 others — `ToggleSwitchFillOn`,
+  `SliderThumbBackground`, `TextControlFocusedBorderBrush`,
+  `CheckBoxCheckBackgroundFillChecked`, `ProgressBarForeground`… — shipped
+  as transparent, so an ON toggle was a bare knob in both themes. The
+  generator now skips any brush whose `ReadLocalValue(ColorProperty)` is an
+  expression (39 keys, detected by what the value IS) and leaves them to the
+  runtime; 22 brushes that WPF-UI itself defines as transparent stay.
+- **WPF-UI brightens the accent it is given.** The `(colour, theme)`
+  overload derived Primary `#4DEBFF` / Secondary `#73EFFF` from `#00BCD4`,
+  so primary buttons were a cyan the browser panel never shows, and the
+  light theme was handed the dark accent. `PanelHost.ApplyAccent` now reads
+  `PanelAccentBrush` / `PanelAccent2Brush` from the merged theme dictionary
+  and hands them to the four-colour `Apply` verbatim: Primary (toggle ON,
+  thumb, focus) and Secondary (accent button at rest) are `--accent`,
+  Tertiary (its hover) is `--accent-2`, per theme. Pixel-checked:
+  `#00BCD4` dark, `#0097A7` light.
+- **The Benchmark table header was a white band** in both themes: the stock
+  `GridView` header template is classic-white and no theme dictionary
+  touches it. `ui:GridView` / `ui:GridViewColumn` (WPF-UI's own) fix it.
+
+Also: the light pair (`CharcoalLight.xaml` + `PanelLight.xaml`) rendered for
+the first time and holds up, once its pin table was made the same 45 keys as
+the dark one token-for-token (`--ok`/`--warn` hues, `--bg-2`, eight keys that
+had fallen through to interpolation); the generator now fails if the two
+files' key sets differ. The unread-log badge ink became `PanelDangerInkBrush`
+(dark `#0B1013`, light `#FFFFFF` — the light danger fill is darker, so the
+winning ink flips). `build_ui.cmd` had no SDK pin: the machine's newest SDK
+(10.x) rewrites `deps.json` and `runtimeconfig.json` against the committed
+output; an 8.0 SDK reproduces it byte-for-byte. The publishes above were
+done with a temporary `global.json` pinning 8.0; the permanent one landed on
+2026-08-23 (repo root, `8.0.100` with `rollForward: latestFeature`, so any
+installed 8.0.x is accepted — open question 7).
 
 ---
 
@@ -298,6 +380,47 @@ receive a wrapping local function, not the method group.
 **`cmd` will not resolve a bare batch name.** `build_ui.cmd` must be invoked as
 `.\build_ui.cmd`. Same trap as commit `9ac67be`.
 
+**A view with `x:Class` and no code-behind renders empty, silently.** The
+BAML compiles, `InitializeComponent()` is generated, and nothing calls it.
+No exception, no binding error — two visual descendants where there should
+be hundreds. Step 8 has the story.
+
+**Accent-derived brushes are `DynamicResource` expressions.** In a dictionary
+walked outside a running application, `.Color` on one reads `#00FFFFFF`.
+Detect them with `ReadLocalValue(SolidColorBrush.ColorProperty)` — an
+`Expression`, not a `Color` — never by the key's name: 36 of the 39 have no
+"Accent" in them.
+
+**`ApplicationAccentColorManager.Apply(colour, theme, …)` brightens.** It
+derives Primary/Secondary/Tertiary from the colour (`#00BCD4` → `#4DEBFF`,
+`#73EFFF`, `#A6F5FF`). The four-colour overload takes the tiers verbatim.
+Secondary is the accent button's colour at rest, Tertiary its hover, Primary
+everything else (toggle ON, slider thumb, focus border).
+
+**A `TabControl` realises the selected tab only.** The other four
+`UserControl`s exist as logical children — their top-level bindings are even
+live — but nothing inside their item templates is instantiated. A soak or a
+screenshot that never switches tabs is looking at one fifth of the View
+layer.
+
+**`panel.bridge` is the Python object.** Calling its methods from Python
+never crosses the CLR boundary. Only a C#-side action — a `FieldVm` setter on
+the dispatcher, a command — exercises pythonnet's reverse path, the GIL it
+takes on the dispatcher thread, and `ApplyAck`.
+
+**`PanelHost.Post*` queues at `DispatcherPriority.Background`.** A tool that
+`BeginInvoke`s at the default priority jumps the queue: the first C#-side
+edit in the soak ran before the hello had loaded the schema.
+
+**The stock `GridView` header template is classic-white** and no theme
+dictionary touches it. `ui:GridView` / `ui:GridViewColumn`.
+
+**`dotnet` picks the newest installed SDK.** SDK 10 prunes framework-provided
+packages from `deps.json` and swaps a `runtimeconfig` property; the committed
+`ui/runtime` is an 8.0 build. `global.json` at the repo root pins the 8.0 band
+(`latestFeature`); a `ui/runtime` diff that touches anything besides
+`LiveTranscription.Ui.dll` means the pin was bypassed.
+
 ---
 
 ## Open questions
@@ -306,17 +429,33 @@ receive a wrapping local function, not the method group.
    ~6.5 MB in history per WPF-UI version, permanently. The alternative — a
    `fetch_wpfui.cmd` following the `_models/` precedent — costs every cloner
    the .NET SDK and a network restore.
-2. **Light theme.** `CharcoalLight.xaml` and `PanelLight.xaml` are generated
-   and written respectively, and `wpf_panel.Panel(dark=False)` merges them —
-   but the light pair has never been rendered or reviewed, and nothing
-   exposes the switch yet. The web panel has a light palette; whether the
-   desktop panel needs one is undecided.
+2. **Light theme.** Rendered and reviewed on 2026-08-23 — every tab, via
+   `wpf_panel.Panel(dark=False)` — and coherent once its pins mirrored the
+   dark ones (step 8). Nothing exposes the switch yet; whether the desktop
+   panel needs one is still undecided. The web panel has one.
 3. **Standalone executable.** The same assembly could ship a `Main` that
    speaks the WebSocket protocol, giving a panel that runs on a different
    machine from the engine. Deliberately cut from v1 — it is a complete second
    client (17 inbound message types, 16 commands, auth, reconnect), which is
    three days, not the one it looks like.
-4. **The four-hour soak on real hardware.** The harness is in
-   `ui/tools/soak.py`; the run itself needs a Windows desktop session and has
-   not happened yet. Until it has, treat any large new retained-state feature
-   in the panel as unproven against leaks.
+4. **The four-hour soak.** Ran on real hardware on 2026-08-23 with the
+   upgraded harness; the verdict line at the end of step 6 is the record.
+   Until a PASS is written there, treat any large new retained-state
+   feature in the panel as unproven against leaks.
+5. **Theme fidelity beyond colour.** An audit against the house
+   theme-patching guideline (single-agent, unverified — its verification
+   pass never ran) lists: WPF-UI's `ControlCornerRadius` 4 where the web
+   panel uses 8 for inputs and 12 for cards; tone chips and pills carry only
+   the ink, not the web rules' tinted fill and border; the meter is a flat
+   fill where the web bar is an ok→warn gradient; the scrollbar thumb is a
+   neutral overlay where `--sb-thumb` is an accent mix; the backend tag is a
+   radius-9 pill where the web and the guideline say 6. None is a defect;
+   each is a deviation to decide on, not to drift into.
+6. **Light `--bg-2`.** `theme-patching-guideline.md:233` says `#E7EDF0`; the
+   website and `webui/style.css` both say `#FFFFFF`. The panel follows the
+   CSS. One of the two is wrong, and it is probably the guideline's table.
+7. **A `global.json`.** The SDK pin that makes `build_ui.cmd` reproduce the
+   committed `ui/runtime` (step 8). Landed 2026-08-23: repo root, `8.0.100`
+   with `rollForward: latestFeature`. Verified by running `.\build_ui.cmd`
+   with 8.0.424 resolved — `deps.json` and `runtimeconfig.json` came back
+   byte-identical to HEAD; `LiveTranscription.Ui.dll` was the only diff.
