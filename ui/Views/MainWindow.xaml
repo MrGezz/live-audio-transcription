@@ -3,6 +3,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:conv="clr-namespace:LiveTranscription.Ui.Converters"
+    xmlns:views="clr-namespace:LiveTranscription.Ui.Views"
     xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
     Title="Live Transcription"
     Width="1180" Height="760" MinWidth="820" MinHeight="520"
@@ -19,12 +20,116 @@
     -->
 
     <ui:FluentWindow.Resources>
-        <conv:SeverityConverter x:Key="Severity" />
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <conv:StarWidthConverter x:Key="Star" />
+
+        <!--
+            Meter track + fill. Star-sized columns rather than pixel widths,
+            so the bar follows every resize without a size-changed handler -
+            see StarWidthConverter.
+        -->
+        <Style x:Key="MeterTrack" TargetType="Border">
+            <Setter Property="Height" Value="8" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Background" Value="{DynamicResource PanelTrackBrush}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="MeterLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{DynamicResource PanelMutedBrush}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+        </Style>
+
+        <Style x:Key="MeterValue" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontFamily" Value="Cascadia Mono, Consolas, monospace" />
+            <Setter Property="Foreground" Value="{DynamicResource PanelMutedBrush}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="8,0,0,0" />
+        </Style>
+
+        <!--
+            One status pill. Four of these answer four different "why is
+            nothing happening?" - see PillVm - and the tone only colours the
+            value, so a bad pill reads at a glance without shouting.
+        -->
+        <DataTemplate x:Key="PillTemplate">
+            <Border Margin="6,0,0,0" Padding="9,2" CornerRadius="11"
+                    BorderThickness="1"
+                    BorderBrush="{DynamicResource PanelLineBrush}"
+                    ToolTip="{Binding Tip}">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock FontSize="10.5" VerticalAlignment="Center"
+                               Foreground="{DynamicResource PanelMutedBrush}"
+                               Text="{Binding Label}" />
+                    <TextBlock Margin="6,0,0,0" FontSize="12" FontWeight="SemiBold"
+                               VerticalAlignment="Center"
+                               Text="{Binding Text}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Tone}" Value="good">
+                                        <Setter Property="Foreground" Value="{DynamicResource PanelOkBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Tone}" Value="bad">
+                                        <Setter Property="Foreground" Value="{DynamicResource PanelDangerBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Tone}" Value="warn">
+                                        <Setter Property="Foreground" Value="{DynamicResource PanelWarnBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Tone}" Value="gpu">
+                                        <Setter Property="Foreground" Value="{DynamicResource PanelVioletBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Tone}" Value="cpu">
+                                        <Setter Property="Foreground" Value="{DynamicResource PanelWarnBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!--
+            Minimal flat tabs: transparent strip, accent underline on the
+            selected one. Restyled here rather than trusting the stock
+            Aero chrome, which renders as light-grey boxes on charcoal.
+        -->
+        <Style x:Key="PanelTabItem" TargetType="TabItem">
+            <Setter Property="Foreground" Value="{DynamicResource PanelText2Brush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border Background="Transparent" Padding="14,7,14,5">
+                            <StackPanel>
+                                <ContentPresenter ContentSource="Header" />
+                                <Rectangle x:Name="Underline" Height="2" Margin="0,5,0,0"
+                                           RadiusX="1" RadiusY="1" Fill="Transparent" />
+                            </StackPanel>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Underline" Property="Fill"
+                                        Value="{DynamicResource PanelAccentBrush}" />
+                                <Setter Property="Foreground"
+                                        Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Cursor" Value="Hand" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </ui:FluentWindow.Resources>
 
     <Grid>
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -38,42 +143,381 @@
         </ui:TitleBar>
 
         <!-- top actions -->
-        <Border Grid.Row="1" Padding="18,6,18,10">
-            <StackPanel Orientation="Horizontal">
-                <ui:Button x:Name="BtnRun"
-                           Command="{Binding StartCommand}"
-                           Content="{Binding RunButtonText}"
-                           Appearance="Primary"
-                           Icon="{ui:SymbolIcon Play24}" />
-                <ui:Button Margin="8,0,0,0"
-                           Command="{Binding RestartCommand}"
-                           Content="Restart"
-                           Icon="{ui:SymbolIcon ArrowSync24}" />
-                <ui:Button Margin="8,0,0,0"
-                           Command="{Binding PauseCommand}"
-                           Content="{Binding PauseButtonText}"
-                           Icon="{ui:SymbolIcon Pause24}" />
+        <Border Grid.Row="1" Padding="18,6,18,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
 
-                <ui:TextBlock VerticalAlignment="Center" Margin="16,0,0,0"
-                              Appearance="Secondary"
-                              Text="{Binding Status}" />
-            </StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <ui:Button x:Name="BtnRun"
+                               Command="{Binding RunCommand}"
+                               Content="{Binding RunButtonText}"
+                               Appearance="Primary"
+                               Icon="{ui:SymbolIcon Play24}" />
+                    <ui:Button Margin="8,0,0,0"
+                               Command="{Binding RestartCommand}"
+                               Content="Restart"
+                               Icon="{ui:SymbolIcon ArrowSync24}" />
+                    <ui:Button Margin="8,0,0,0"
+                               Command="{Binding PauseCommand}"
+                               Content="{Binding PauseButtonText}"
+                               Icon="{ui:SymbolIcon Pause24}" />
+
+                    <ui:ProgressRing Margin="14,0,0,0" Width="20" Height="20"
+                                     IsIndeterminate="True"
+                                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
+                    <TextBlock Margin="6,0,0,0" VerticalAlignment="Center"
+                               Foreground="{DynamicResource PanelWarnBrush}"
+                               Text="{Binding BusyLabel}" />
+
+                    <ui:TextBlock VerticalAlignment="Center" Margin="16,0,0,0"
+                                  Appearance="Secondary"
+                                  Text="{Binding Status}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <TextBlock VerticalAlignment="Center" Margin="0,0,10,0" FontSize="11"
+                               Foreground="{DynamicResource PanelMutedBrush}">
+                        <Run Text="v" /><Run Text="{Binding Version, Mode=OneWay}" />
+                    </TextBlock>
+                    <ui:Button Command="{Binding ExitCommand}"
+                               Icon="{ui:SymbolIcon Power24}"
+                               ToolTip="Stop transcription and close the program. Closing the window only closes this panel." />
+                </StackPanel>
+            </Grid>
         </Border>
 
         <!--
-            The banner sits above everything, because that is where the eye
-            already is when nothing is happening: "the meters are flat" and
-            "nothing is running" look identical until something says which.
+            The run banner sits above everything, because that is where the
+            eye already is when nothing is happening: "the meters are flat"
+            and "nothing is running" look identical until something says
+            which. Hand-rolled so its actions sit inside it - the fix next to
+            the complaint.
         -->
-        <ui:InfoBar Grid.Row="2" Margin="18,0,18,10"
-                    IsOpen="{Binding BannerOpen}"
-                    Severity="{Binding BannerSeverity, Converter={StaticResource Severity}}"
-                    Title="{Binding BannerTitle}"
-                    Message="{Binding BannerMessage}" />
+        <Border Grid.Row="2" Margin="18,0,18,8" CornerRadius="8"
+                Background="{DynamicResource PanelCardBrush}"
+                BorderThickness="1"
+                Visibility="{Binding BannerOpen, Converter={StaticResource BoolToVis}}">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="BorderBrush" Value="{DynamicResource PanelAccentBrush}" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding BannerSeverity}" Value="Error">
+                            <Setter Property="BorderBrush" Value="{DynamicResource PanelDangerBrush}" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding BannerSeverity}" Value="Warning">
+                            <Setter Property="BorderBrush" Value="{DynamicResource PanelWarnBrush}" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding BannerSeverity}" Value="Success">
+                            <Setter Property="BorderBrush" Value="{DynamicResource PanelOkBrush}" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+            <Grid Margin="14,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock FontWeight="SemiBold" TextWrapping="Wrap"
+                               Text="{Binding BannerTitle}" />
+                    <TextBlock TextWrapping="Wrap" FontSize="12" Margin="0,2,0,0"
+                               Foreground="{DynamicResource PanelText2Brush}"
+                               Text="{Binding BannerMessage}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding BannerMessage}" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+                <ItemsControl Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center"
+                              ItemsSource="{Binding BannerActions}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <ui:Button Margin="6,0,0,0" Padding="10,4"
+                                       Content="{Binding Label}"
+                                       Command="{Binding Command}">
+                                <ui:Button.Style>
+                                    <Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Primary}" Value="True">
+                                                <Setter Property="Appearance" Value="Primary" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ui:Button.Style>
+                            </ui:Button>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <ui:Button Grid.Column="2" Margin="10,0,0,0" Padding="6,4"
+                           VerticalAlignment="Center"
+                           Icon="{ui:SymbolIcon Dismiss24}"
+                           Command="{Binding CloseBannerCommand}" />
+            </Grid>
+        </Border>
 
-        <ui:TextBlock Grid.Row="3" Margin="18"
-                      VerticalAlignment="Center" HorizontalAlignment="Center"
-                      Appearance="Secondary"
-                      Text="panel shell - tabs land here" />
+        <!-- the status strip: meters, the gate's verdict, four pills -->
+        <Grid Grid.Row="3" Margin="18,0,18,8">
+            <Grid.Style>
+                <Style TargetType="Grid">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding StatusBar.Offline}" Value="True">
+                            <Setter Property="Opacity" Value="0.45" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Style>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <!-- meters -->
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="52" />
+                    <ColumnDefinition Width="190" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Style="{StaticResource MeterLabel}" Text="level" />
+                <Border Grid.Column="1" Style="{StaticResource MeterTrack}">
+                    <Grid>
+                        <!-- fill -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="{Binding StatusBar.Level, Converter={StaticResource Star}}" />
+                                <ColumnDefinition Width="{Binding StatusBar.Level, Converter={StaticResource Star}, ConverterParameter=rest}" />
+                            </Grid.ColumnDefinitions>
+                            <Rectangle RadiusX="4" RadiusY="4"
+                                       Fill="{DynamicResource PanelAccentBrush}" />
+                        </Grid>
+                        <!-- where the silence threshold sits, on the same curve -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="{Binding StatusBar.Threshold, Converter={StaticResource Star}}" />
+                                <ColumnDefinition Width="{Binding StatusBar.Threshold, Converter={StaticResource Star}, ConverterParameter=rest}" />
+                            </Grid.ColumnDefinitions>
+                            <Rectangle Grid.Column="1" Width="2" HorizontalAlignment="Left"
+                                       Fill="{DynamicResource PanelWarnBrush}" />
+                        </Grid>
+                    </Grid>
+                </Border>
+                <TextBlock Grid.Column="2" Style="{StaticResource MeterValue}"
+                           Text="{Binding StatusBar.LevelText}" />
+
+                <TextBlock Grid.Row="1" Style="{StaticResource MeterLabel}"
+                           Margin="0,6,8,0" Text="speech" />
+                <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource MeterTrack}"
+                        Margin="0,6,0,0">
+                    <Grid>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="{Binding StatusBar.VadFill, Converter={StaticResource Star}}" />
+                                <ColumnDefinition Width="{Binding StatusBar.VadFill, Converter={StaticResource Star}, ConverterParameter=rest}" />
+                            </Grid.ColumnDefinitions>
+                            <Rectangle RadiusX="4" RadiusY="4"
+                                       Fill="{DynamicResource PanelOkBrush}" />
+                        </Grid>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="{Binding StatusBar.VadMark, Converter={StaticResource Star}}" />
+                                <ColumnDefinition Width="{Binding StatusBar.VadMark, Converter={StaticResource Star}, ConverterParameter=rest}" />
+                            </Grid.ColumnDefinitions>
+                            <Rectangle Grid.Column="1" Width="2" HorizontalAlignment="Left"
+                                       Fill="{DynamicResource PanelWarnBrush}" />
+                        </Grid>
+                    </Grid>
+                </Border>
+                <TextBlock Grid.Row="1" Grid.Column="2" Style="{StaticResource MeterValue}"
+                           Margin="8,6,0,0" Text="{Binding StatusBar.VadText}" />
+            </Grid>
+
+            <!-- what the gate decided, and how much audio is waiting -->
+            <StackPanel Grid.Column="1" Margin="18,0,18,0" VerticalAlignment="Center">
+                <TextBlock FontSize="12" TextWrapping="Wrap"
+                           Text="{Binding StatusBar.GateText}"
+                           Visibility="{Binding StatusBar.HasGateText, Converter={StaticResource BoolToVis}}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{DynamicResource PanelText2Brush}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding StatusBar.GateState}" Value="live">
+                                    <Setter Property="Foreground" Value="{DynamicResource PanelOkBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding StatusBar.GateState}" Value="silence">
+                                    <Setter Property="Foreground" Value="{DynamicResource PanelMutedBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding StatusBar.GateState}" Value="nospeech">
+                                    <Setter Property="Foreground" Value="{DynamicResource PanelWarnBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                <TextBlock FontSize="11" Margin="0,2,0,0"
+                           Foreground="{DynamicResource PanelMutedBrush}"
+                           Text="{Binding StatusBar.PendingText}" />
+            </StackPanel>
+
+            <!-- the four pills -->
+            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <ContentControl Content="{Binding StatusBar.BackendPill}"
+                                ContentTemplate="{StaticResource PillTemplate}" />
+                <ContentControl Content="{Binding StatusBar.SourcePill}"
+                                ContentTemplate="{StaticResource PillTemplate}" />
+                <ContentControl Content="{Binding StatusBar.RealtimePill}"
+                                ContentTemplate="{StaticResource PillTemplate}" />
+                <ContentControl Content="{Binding StatusBar.LanguagePill}"
+                                ContentTemplate="{StaticResource PillTemplate}" />
+            </StackPanel>
+        </Grid>
+
+        <!-- the five tabs -->
+        <TabControl Grid.Row="4" Margin="10,0,10,0"
+                    Background="Transparent" BorderThickness="0" Padding="0"
+                    SelectedIndex="{Binding SelectedTab}">
+            <TabItem Style="{StaticResource PanelTabItem}" Header="Transcript">
+                <views:TranscriptTab DataContext="{Binding}" />
+            </TabItem>
+            <TabItem Style="{StaticResource PanelTabItem}" Header="Settings">
+                <views:SettingsTab DataContext="{Binding SettingsPane}" />
+            </TabItem>
+            <TabItem Style="{StaticResource PanelTabItem}" Header="Engine">
+                <views:EngineTab DataContext="{Binding}" />
+            </TabItem>
+            <TabItem Style="{StaticResource PanelTabItem}" Header="Benchmark">
+                <views:BenchmarkTab DataContext="{Binding Benchmark}" />
+            </TabItem>
+            <TabItem Style="{StaticResource PanelTabItem}">
+                <TabItem.Header>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Log" />
+                        <!-- warnings you have not looked at; opening the tab
+                             clears it, so it never becomes a permanent light -->
+                        <Border Margin="6,0,0,0" Padding="6,0" CornerRadius="8"
+                                VerticalAlignment="Center"
+                                Background="{DynamicResource PanelDangerBrush}"
+                                Visibility="{Binding StatusBar.HasUnreadLogs, Converter={StaticResource BoolToVis}}">
+                            <TextBlock FontSize="10.5" FontWeight="SemiBold"
+                                       Foreground="#FF0B1013"
+                                       Text="{Binding StatusBar.UnreadLabel}" />
+                        </Border>
+                    </StackPanel>
+                </TabItem.Header>
+                <views:LogTab DataContext="{Binding Log}" />
+            </TabItem>
+        </TabControl>
+
+        <!--
+            Toasts, over everything below the title bar. Hovering holds a
+            toast open - a 30 s offer must not expire mid-decision.
+        -->
+        <ItemsControl Grid.Row="1" Grid.RowSpan="4" Margin="0,4,22,0"
+                      HorizontalAlignment="Right" VerticalAlignment="Top"
+                      Width="370"
+                      ItemsSource="{Binding StatusBar.Toasts}">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <Border Margin="0,0,0,8" Padding="12,9" CornerRadius="8"
+                            Background="{DynamicResource PanelCardBrush}"
+                            BorderThickness="1,1,1,1"
+                            MouseEnter="Toast_MouseEnter">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="BorderBrush" Value="{DynamicResource PanelAccentBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Severity}" Value="Error">
+                                        <Setter Property="BorderBrush" Value="{DynamicResource PanelDangerBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Severity}" Value="Warning">
+                                        <Setter Property="BorderBrush" Value="{DynamicResource PanelWarnBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Severity}" Value="Success">
+                                        <Setter Property="BorderBrush" Value="{DynamicResource PanelOkBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel>
+                                <TextBlock FontWeight="SemiBold" TextWrapping="Wrap"
+                                           Text="{Binding Title}" />
+                                <TextBlock FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"
+                                           Foreground="{DynamicResource PanelText2Brush}"
+                                           Text="{Binding Message}" />
+                            </StackPanel>
+                            <ui:Button Grid.Column="1" Margin="8,0,0,0" Padding="5,3"
+                                       VerticalAlignment="Top"
+                                       Icon="{ui:SymbolIcon Dismiss24}"
+                                       Command="{Binding DismissCommand}" />
+
+                            <ComboBox Grid.Row="1" Grid.ColumnSpan="2" Margin="0,8,0,0"
+                                      ItemsSource="{Binding Options}"
+                                      SelectedItem="{Binding SelectedOption}"
+                                      DisplayMemberPath="Display"
+                                      Visibility="{Binding HasOptions, Converter={StaticResource BoolToVis}}" />
+
+                            <ItemsControl Grid.Row="2" Grid.ColumnSpan="2" Margin="0,8,0,0"
+                                          ItemsSource="{Binding Actions}"
+                                          Visibility="{Binding HasActions, Converter={StaticResource BoolToVis}}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <ui:Button Margin="0,0,6,0" Padding="10,4"
+                                                   Content="{Binding Label}"
+                                                   Command="{Binding Command}">
+                                            <ui:Button.Style>
+                                                <Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Primary}" Value="True">
+                                                            <Setter Property="Appearance" Value="Primary" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </ui:Button.Style>
+                                        </ui:Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Grid>
+                    </Border>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
     </Grid>
 </ui:FluentWindow>

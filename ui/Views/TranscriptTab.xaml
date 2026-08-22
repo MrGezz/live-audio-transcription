@@ -1,0 +1,147 @@
+<!--
+    The transcript. DataContext is MainVm (the toolbar needs ClearCommand and
+    Export); the list binds through Transcript.
+
+    The ItemsControl MUST keep its explicit VirtualizingStackPanel. Its
+    default ItemsPanel is a plain StackPanel, which realises every item
+    whether or not it is on screen - and a 600-line transcript with per-word
+    Runs is on the order of twelve thousand visual elements. Changing this
+    panel back is not a styling decision. See TranscriptVm's remarks.
+-->
+<UserControl x:Class="LiveTranscription.Ui.Views.TranscriptTab"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             xmlns:conv="clr-namespace:LiveTranscription.Ui.Converters"
+             xmlns:views="clr-namespace:LiveTranscription.Ui.Views"
+             DataContextChanged="OnDataContextChanged">
+
+    <UserControl.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+    </UserControl.Resources>
+
+    <DockPanel Margin="14,10,14,0">
+
+        <Grid DockPanel.Dock="Top" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <ui:Button Content="Clear"
+                       Icon="{ui:SymbolIcon Delete24}"
+                       Command="{Binding ClearCommand}" />
+
+            <ui:DropDownButton Grid.Column="1" Margin="8,0,0,0"
+                               Content="Export"
+                               Icon="{ui:SymbolIcon ArrowDownload24}">
+                <ui:DropDownButton.Flyout>
+                    <ContextMenu>
+                        <MenuItem Header="Plain text (.txt)" Tag="txt" Click="OnExport" />
+                        <MenuItem Header="JSON Lines (.jsonl)" Tag="jsonl" Click="OnExport" />
+                        <MenuItem Header="SubRip subtitles (.srt)" Tag="srt" Click="OnExport" />
+                        <MenuItem Header="WebVTT subtitles (.vtt)" Tag="vtt" Click="OnExport" />
+                    </ContextMenu>
+                </ui:DropDownButton.Flyout>
+            </ui:DropDownButton>
+
+            <ui:ToggleSwitch Grid.Column="2" Margin="16,0,0,0"
+                             Content="Follow the newest caption"
+                             IsChecked="{Binding Transcript.AutoScroll}" />
+
+            <TextBlock Grid.Column="4" VerticalAlignment="Center" FontSize="12"
+                       Foreground="{DynamicResource PanelMutedBrush}">
+                <Run Text="{Binding Transcript.Count, Mode=OneWay}" /><Run Text=" captions" />
+            </TextBlock>
+        </Grid>
+
+        <Grid>
+            <ItemsControl x:Name="List"
+                          ItemsSource="{Binding Transcript.Lines}"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling"
+                          ScrollViewer.CanContentScroll="True">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <VirtualizingStackPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.Template>
+                    <ControlTemplate TargetType="ItemsControl">
+                        <ScrollViewer x:Name="Scroller"
+                                      CanContentScroll="True"
+                                      VerticalScrollBarVisibility="Auto"
+                                      ScrollChanged="OnScrollChanged">
+                            <ItemsPresenter />
+                        </ScrollViewer>
+                    </ControlTemplate>
+                </ItemsControl.Template>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="0,3" ToolTip="{Binding Tip}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="120" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- wall clock is what a meeting is indexed by;
+                                 mm:ss is where it sits in the recording -->
+                            <TextBlock FontFamily="Cascadia Mono, Consolas, monospace"
+                                       FontSize="11.5" VerticalAlignment="Top"
+                                       Margin="0,2,10,0"
+                                       Foreground="{DynamicResource PanelMutedBrush}">
+                                <Run Text="{Binding WallTime, Mode=OneWay}" />
+                                <Run Text="{Binding Clock, Mode=OneWay}"
+                                     Foreground="{DynamicResource PanelText2Brush}" />
+                            </TextBlock>
+
+                            <Border Grid.Column="1" Margin="0,1,10,0" Padding="7,1"
+                                    CornerRadius="9" VerticalAlignment="Top"
+                                    Background="{DynamicResource PanelAccentSoftBrush}"
+                                    ToolTip="{Binding Backend}">
+                                <TextBlock FontSize="10.5" Text="{Binding Tag}">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground"
+                                                    Value="{DynamicResource PanelAccentBrush}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Backend}" Value="server">
+                                                    <Setter Property="Foreground"
+                                                            Value="{DynamicResource PanelVioletBrush}" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding Backend}" Value="local">
+                                                    <Setter Property="Foreground"
+                                                            Value="{DynamicResource PanelWarnBrush}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Border>
+
+                            <!-- one flowing paragraph of confidence-coloured
+                                 Runs - see WordInlines for why not ItemsControl -->
+                            <TextBlock Grid.Column="2" TextWrapping="Wrap"
+                                       FontSize="14.5"
+                                       views:WordInlines.Words="{Binding Words}" />
+                        </Grid>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                        MaxWidth="480"
+                        Visibility="{Binding Transcript.IsEmpty, Converter={StaticResource BoolToVis}}">
+                <ui:TextBlock FontTypography="Subtitle" TextAlignment="Center"
+                              Text="Nothing transcribed yet" />
+                <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" TextAlignment="Center"
+                           Foreground="{DynamicResource PanelText2Brush}"
+                           Text="Captions appear here as they are transcribed. If the meters above are moving and nothing arrives, the Engine tab says which part is not running." />
+            </StackPanel>
+        </Grid>
+    </DockPanel>
+</UserControl>

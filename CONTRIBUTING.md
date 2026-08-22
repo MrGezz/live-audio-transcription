@@ -29,6 +29,14 @@ python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 ```
 
+Working on the desktop panel (`ui/`) additionally needs the **.NET 8 SDK**,
+once, to run `.\build_ui.cmd`; merely *running* the panel needs only the
+Desktop Runtime, because the build output is committed under `ui/runtime`.
+`ui\tools\shot.py` renders the window to a PNG for review, and
+`ui\tools\soak.py --minutes 5` is the smoke version of the four-hour leak
+soak (run the full one before building more UI on top of a binding-layer
+change).
+
 To run against the GPU backend:
 
 1. `start_whisper_server.cmd ggml-medium-q5_0.bin` (no argument = default `ggml-base-q5_1.bin`)
@@ -51,6 +59,9 @@ Each of these fixes a real bug we found in review. A PR that weakens one needs a
 8. **Never normalize per chunk.** Capture hands the worker raw audio; the window is scaled once, immediately before inference. Peak-normalizing each ~128 ms block destroys the only evidence the silence threshold and the VAD have — measured, quiet room tone goes from `0.0064` (correctly below the threshold) to `0.2214`, against speech at `0.2279`. It is also a per-chunk AGC that pumps gain inside a single word.
 9. **Silero needs its 64-sample context.** Both ONNX export styles declare a dynamic input shape and will happily accept a bare 512-sample hop — then return near-zero probability for everything, which is indistinguishable from "no speech" and silently stops the transcript. Frames must be `64 + 512`. `speech_gate.py` builds them in one place for exactly this reason. For the same family of reasons `create()` must run the model once before returning it, and `speech_frames()` must never raise into the caller: the worker calls it *outside* the `try/except` that guards `transcribe()`, so a model that loads and then throws kills the worker thread and leaves the app running with no captions and nothing in the log. Input names identify an export but do not prove it runs — upstream ships streaming models both with and without an `sr` input, and feeding an undeclared input is a hard `InvalidArgument`.
 10. **The threshold and the frame count are not one knob.** Do not collapse `--vad-threshold` and `--vad-min-speech-ms` into a single "sensitivity" setting — they separate different things, and only one of them separates music from noise. Measured, frames over `0.5` per 4-second window: speech `66 70 66 67 74 78 36 83 74 35 97`, music with vocals `2 3 2 11 2 6 7 15 0 5`, room tone and fan hum `0` in every window. Lowering the *threshold* moves every source toward passing together (at `0.05`, music reaches 3/6 windows and room tone 2/6 — no useful gap). Lowering the *frame requirement* works precisely because steady noise scores zero: `60 ms` admitted 9/10 music windows with noise still at 0/6.
+11. **After any `ui/` change: `.\build_ui.cmd`, then commit `ui/runtime`.** The desktop panel's publish output is committed so a fresh clone runs it with only the .NET Desktop Runtime — no SDK, no restore, no network. Nothing enforces the rebuild but this line: a PR that edits `ui/*.cs` or `ui/*.xaml` without a matching `ui/runtime` diff ships a panel that silently does not contain the change. (`.\build_ui.cmd` with the leading `.\` — cmd does not resolve a bare batch name.)
+12. **Bridge methods return promptly and never touch the window.** Everything in `wpf_panel.py`'s `EngineBridge` runs ON the WPF dispatcher thread holding the GIL; slow work goes through `App._lifecycle`, and state goes back in through `PanelHost.Post*` / `Panel.event`, which marshal asynchronously. A blocking `Dispatcher.Invoke` from a bridge method — or joining the panel thread from a bridge method, which is what `Panel.close()` does — is the one deadlock this architecture can produce; `_request_exit` uses `Panel.request_close()` for exactly that reason.
+13. **The settings pane stays generated.** Adding a `Field(...)` to `settings.py` must make a control appear in *both* panels with no UI edit. Anything that special-cases a key by name in `ui/Settings` or `webui/app.js` is a hole in that; there is exactly one sanctioned hole (`model`, rendered as a picker over `_models` — both panels make the same exception, see `SettingsVm.SetModels`). A new field *kind* is different: it needs a template in `ui/Views/FieldTemplates.xaml`, a case in `FieldTemplateSelector`, and the kind added to `SettingsVm.KnownKinds` — the startup assert fails loudly listing exactly these three places until all of them exist.
 
 ## Testing Expectations
 

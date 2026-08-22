@@ -1,0 +1,102 @@
+<!--
+    The generated settings pane. DataContext is SettingsVm; every row below
+    the toolbar comes out of Views/FieldTemplates.xaml, so nothing here names
+    a setting.
+-->
+<UserControl x:Class="LiveTranscription.Ui.Views.SettingsTab"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             xmlns:conv="clr-namespace:LiveTranscription.Ui.Converters">
+
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/LiveTranscription.Ui;component/Views/FieldTemplates.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+            <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <DockPanel Margin="14,10,6,0">
+
+        <!-- toolbar: search, the advanced gate, presets, reset -->
+        <Grid DockPanel.Dock="Top" Margin="0,0,8,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" MaxWidth="320" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <ui:TextBox Icon="{ui:SymbolIcon Search24}"
+                        PlaceholderText="Filter settings"
+                        ClearButtonEnabled="True"
+                        Text="{Binding Search, UpdateSourceTrigger=PropertyChanged, Delay=150}" />
+
+            <!-- 19 fields hide behind this; the count is in the group headers -->
+            <ui:ToggleSwitch Grid.Column="1" Margin="12,0,0,0"
+                             Content="Advanced"
+                             IsChecked="{Binding ShowAdvanced}" />
+
+            <StackPanel Grid.Column="3" Orientation="Horizontal">
+                <ComboBox x:Name="PresetBox" MinWidth="150" IsEditable="True"
+                          ToolTip="Pick a preset to load, or type a name and press Save"
+                          ItemsSource="{Binding Presets}" />
+                <ui:Button Margin="6,0,0,0" Content="Load"
+                           Click="OnPresetLoad" />
+                <ui:Button Margin="6,0,0,0" Content="Save"
+                           Icon="{ui:SymbolIcon Save24}"
+                           Click="OnPresetSave" />
+                <ui:Button Margin="6,0,0,0"
+                           Icon="{ui:SymbolIcon Delete24}"
+                           ToolTip="Delete the selected preset"
+                           Click="OnPresetDelete" />
+                <ui:Button Margin="14,0,0,0" Content="Defaults"
+                           ToolTip="Reset every setting to its default"
+                           Click="OnDefaults" />
+            </StackPanel>
+        </Grid>
+
+        <!--
+            What the edit that just left is about to rebuild. Without this,
+            changing the backend looks like the panel ignoring the click for
+            the seconds a CPU model takes to load.
+        -->
+        <ui:InfoBar DockPanel.Dock="Top" Margin="0,0,8,8"
+                    IsClosable="False"
+                    Severity="Informational"
+                    IsOpen="{Binding HasRebuildNote, Mode=OneWay}"
+                    Message="{Binding RebuildNote}" />
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
+            <ItemsControl ItemsSource="{Binding Groups}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <ui:CardExpander Margin="0,0,0,8"
+                                         IsExpanded="{Binding IsExpanded}"
+                                         Visibility="{Binding IsShown, Converter={StaticResource BoolToVis}}">
+                            <ui:CardExpander.Header>
+                                <Grid ToolTip="{Binding Help}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <ui:TextBlock FontTypography="BodyStrong"
+                                                  Text="{Binding Label}" />
+                                    <TextBlock Grid.Column="1" Margin="10,0,4,0"
+                                               VerticalAlignment="Center" FontSize="12"
+                                               Foreground="{DynamicResource PanelMutedBrush}"
+                                               Text="{Binding CountLabel}" />
+                                </Grid>
+                            </ui:CardExpander.Header>
+                            <ItemsControl Margin="4,0"
+                                          ItemsSource="{Binding Fields}"
+                                          ItemTemplate="{StaticResource FieldRowTemplate}" />
+                        </ui:CardExpander>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>

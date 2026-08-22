@@ -14,7 +14,7 @@
     ],
     "configProperties": {
       "System.Reflection.Metadata.MetadataUpdater.IsSupported": false,
-      "CSWINRT_USE_WINDOWS_UI_XAML_PROJECTIONS": false
+      "System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization": true
     }
   }
 }

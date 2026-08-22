@@ -59,18 +59,24 @@ echo   [4] Web UI    - live_transcription.py --web, opens a browser control
 echo                   panel with EVERY option, changeable while it runs.
 echo                   No questions here: the page asks them, and lets you
 echo                   change your mind without restarting.  (recommended)
+echo   [5] Desktop UI - live_transcription.py --wpf, the same control panel
+echo                   as a native window: no listener, no port, no browser.
+echo                   Needs the .NET 8 Desktop Runtime; if it is missing the
+echo                   console says so and transcription runs anyway.
 REM  Seeded BEFORE the prompt, not after it. A successful "set" resets
 REM  ERRORLEVEL to 0, so a default assignment placed between the choice and the
 REM  tests below sends every selection down the first branch - see the second
 REM  trap noted under the tests.
 set "WEBUI=0"
-choice /C 1234 /N /M "Select what to run [1/2/3/4]: "
+set "WPFUI=0"
+choice /C 12345 /N /M "Select what to run [1/2/3/4/5]: "
 REM  Two traps here, and the second one is silent:
 REM   - "if errorlevel N" means N OR HIGHER, so 3 also satisfies the test for
 REM     2. The tests must run in DESCENDING order.
 REM   - a successful "set" resets ERRORLEVEL to 0, so branching has to happen
 REM     BEFORE the first assignment. Seeding a default first and overriding it
 REM     looks tidier and silently sends every choice down the same path.
+if errorlevel 5 goto mode_wpf
 if errorlevel 4 goto mode_web
 if errorlevel 3 goto mode_bench
 if errorlevel 2 goto mode_lite
@@ -85,6 +91,10 @@ goto mode_done
 :mode_web
 set "SCRIPT_FILE=live_transcription.py"
 set "WEBUI=1"
+goto mode_done
+:mode_wpf
+set "SCRIPT_FILE=live_transcription.py"
+set "WPFUI=1"
 :mode_done
 
 set "TRANSLATE=0"
@@ -105,8 +115,10 @@ if "!SCRIPT_FILE!"=="benchmark.py" set "IS_BENCH=1"
 if "!IS_LITE!"=="1" goto summary
 REM  The panel asks all of this itself, and unlike these prompts it can be
 REM  answered again five minutes in without restarting - so asking twice here
-REM  would only be a chance to disagree with yourself.
+REM  would only be a chance to disagree with yourself. The desktop panel is
+REM  the same panel, so the same reasoning skips the prompts for it.
 if "!WEBUI!"=="1" goto summary
+if "!WPFUI!"=="1" goto summary
 if "!IS_BENCH!"=="1" goto benchopts
 
 echo.
@@ -243,6 +255,7 @@ set "SHOWOPTS=1"
 if "!IS_LITE!"=="1" set "SHOWOPTS=0"
 if "!IS_BENCH!"=="1" set "SHOWOPTS=0"
 if "!WEBUI!"=="1" set "SHOWOPTS=0"
+if "!WPFUI!"=="1" set "SHOWOPTS=0"
 
 echo.
 echo ============================================================
@@ -254,6 +267,8 @@ echo   Script ....................... !SCRIPT_FILE!
 if "!IS_LITE!"=="1"    echo   Configuration ................ built-in defaults (Lite)
 if "!WEBUI!"=="1"      echo   Configuration ................ in the browser, live
 if "!WEBUI!"=="1"      echo   Control panel ................ http://127.0.0.1:8770
+if "!WPFUI!"=="1"      echo   Configuration ................ in the desktop panel, live
+if "!WPFUI!"=="1"      echo   Control panel ................ a native window
 if "!SHOWOPTS!"=="1"   echo   Pace ......................... !S_PACE!
 if "!IS_BENCH!"=="1"   echo   Audio source ................. !S_BENCHWAV!
 if "!IS_BENCH!"=="1"   echo   Buffer sizes to time ......... !BENCHSIZES!
@@ -341,6 +356,7 @@ echo ============================================================
 set "PYARGS="
 if "!IS_LITE!"=="1" goto run
 if "!WEBUI!"=="1" goto webargs
+if "!WPFUI!"=="1" goto wpfargs
 if "!IS_BENCH!"=="1" goto benchargs
 if "!TRANSLATE!"=="1" set "PYARGS=!PYARGS! --translate"
 if "!SAVE!"=="1" set "PYARGS=!PYARGS! --save"
@@ -358,6 +374,11 @@ REM  flags are generated from, so anything set here would only be a value the
 REM  page immediately offers to change - and a device chosen here would be
 REM  chosen twice, since the console picker is skipped under --web.
 set "PYARGS=--web"
+goto run
+
+:wpfargs
+REM  Same reasoning as :webargs - the window offers every option itself.
+set "PYARGS=--wpf"
 goto run
 
 :benchargs

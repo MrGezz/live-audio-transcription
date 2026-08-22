@@ -189,7 +189,10 @@ def _bridge_class():
             self._app.pipeline.pause(False)
 
         def ClearTranscript(self):
-            self._app.pipeline.clear()
+            self._app.pipeline.clear_history()
+            if self._app.overlay is not None:
+                # Queued by overlay.py for its own pump - safe off-thread.
+                self._app.overlay.clear()
 
         def RequestExit(self):
             self._app._request_exit()
@@ -197,10 +200,24 @@ def _bridge_class():
         # ---- whisper-server ---------------------------------------------
 
         def EngineAction(self, action, model):
-            args = {"action": str(action)}
+            action = str(action)
+            if action == "status":
+                # Cheap enough not to need the single slot, and a poll that
+                # queued behind a running Restart would report stale numbers
+                # for the whole of it - the same special case _command makes.
+                threading.Thread(target=self._app._refresh_engine,
+                                 name="engine", daemon=True).start()
+                return True
+            args = {"action": action}
             if model:
                 args["model"] = str(model)
-            return bool(self._app._engine_action(str(action), args))
+            # Through _lifecycle, exactly like the websocket path: start
+            # waits up to 45 s for the server to answer, and this method
+            # runs ON the dispatcher thread - calling it directly would
+            # freeze the window for the duration.
+            return bool(self._app._lifecycle(
+                "engine " + action,
+                lambda: self._app._engine_action(action, args)))
 
         # ---- settings ----------------------------------------------------
 
@@ -257,14 +274,33 @@ def _bridge_class():
         def PresetDelete(self, name):
             return json.dumps(self._app._preset_delete(str(name)))
 
+        # ---- audio in ------------------------------------------------------
+
+        def PushAudioChunk(self, pcm16le):
+            # The desktop half of what `capture: browser` does: 16 kHz mono
+            # little-endian PCM16, the same bytes the browser puts on its
+            # socket, into the same Pipeline.feed. Runs on NAudio's capture
+            # thread and must stay cheap - feed appends under a lock and
+            # returns. bytes() copies out of the CLR array via the buffer
+            # protocol; the array is exactly as long as the audio in it,
+            # which is the C# side's contract.
+            return bool(self._app.pipeline.feed(bytes(pcm16le)))
+
         # ---- misc ----------------------------------------------------------
 
         def RescanDevices(self):
-            self._app._rescan_devices()
+            # Enumeration costs 585 ms the first time (PortAudio walks every
+            # host API) - the same reason _ws_open never does it inline.
+            threading.Thread(target=self._app._rescan_devices,
+                             name="devices", daemon=True).start()
 
         def RunBenchmark(self, args_json):
             args = json.loads(args_json) if args_json else {}
-            return bool(self._app._run_benchmark(args))
+            # _run_benchmark spawns the thread and returns nothing; the bool
+            # here is "was it started", and everything after arrives as
+            # benchmark events.
+            self._app._run_benchmark(args)
+            return True
 
     _BRIDGE_CLASS = EngineBridge
     return EngineBridge
@@ -335,6 +371,27 @@ class Panel(object):
     # ---- pushing state in -------------------------------------------------
     # All async. Never a blocking Invoke - see the module docstring.
 
+    def hello(self, payload):
+        """The opening document - the same dict _ws_open sends a browser."""
+        if self._host is not None:
+            self._host.PostHello(json.dumps(payload))
+
+    def event(self, kind, data):
+        """One (kind, data) pair off the engine's event stream.
+
+        Meter frames skip the dispatcher entirely: OfferMeter parses and
+        parks the values under a lock on THIS thread, and a 30 Hz timer on
+        the UI thread publishes them. Eight BeginInvokes a second forever is
+        exactly the cost that design exists to avoid. Everything else is rare
+        enough that one marshal per event is the simple, correct answer.
+        """
+        if self._host is None:
+            return
+        if kind == "meter":
+            self._host.OfferMeter(json.dumps(data))
+        else:
+            self._host.PostEvent(str(kind), json.dumps(data))
+
     def busy(self, name):
         if self._host is not None:
             self._host.PostBusy(name or "")
@@ -355,8 +412,24 @@ class Panel(object):
         if self._host is not None:
             self._host.PostBannerHidden()
 
-    def close(self, timeout=8.0):
+    def request_close(self):
+        """Ask the window to close, without waiting for it.
+
+        This is the ONLY close that may be called from a bridge method (the
+        Exit button ends up here): close() joins the WPF thread, and joining
+        the WPF thread FROM the WPF thread deadlocks for the whole timeout.
+        """
         if self._host is not None:
             self._host.Shutdown()
+
+    def close(self, timeout=8.0):
+        """Close the window and wait for the WPF thread to end.
+
+        For shutdown paths that do not run on the panel's own thread -
+        App.shutdown on the main thread. Joining matters there: the process
+        is about to end, and a message loop still draining while the
+        interpreter finalizes is a use-after-free with a stack.
+        """
+        self.request_close()
         if self._thread is not None:
             self._thread.Join(int(timeout * 1000))

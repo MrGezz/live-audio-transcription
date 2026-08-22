@@ -68,6 +68,18 @@ public sealed class PanelHost
                 UriKind.Relative),
         });
 
+        // The panel's own semantic keys - confidence bands, pill tones -
+        // which exist in no WPF-UI dictionary. Hand-written, not generated;
+        // merged last so nothing can shadow them.
+        _app.Resources.MergedDictionaries.Add(new ResourceDictionary
+        {
+            Source = new Uri(
+                dark
+                    ? "/LiveTranscription.Ui;component/Themes/Panel.xaml"
+                    : "/LiveTranscription.Ui;component/Themes/PanelLight.xaml",
+                UriKind.Relative),
+        });
+
         ApplicationThemeManager.Apply(
             dark ? ApplicationTheme.Dark : ApplicationTheme.Light,
             WindowBackdropType.Mica,
@@ -77,6 +89,18 @@ public sealed class PanelHost
 
         _vm = new MainVm(bridge, Dispatcher.CurrentDispatcher);
         _window = new MainWindow { DataContext = _vm };
+
+        // ShutdownMode is OnExplicitShutdown, so without this the close
+        // button would remove the window and leave the message loop - and
+        // Python's "panel is alive" answer - running with nothing on screen.
+        // Closing the window means the front end is gone, exactly like
+        // closing the browser tab; the engine's lifetime is app.py's call.
+        _window.Closed += (_, _) =>
+        {
+            IsReady = false;
+            _vm?.Audio.Stop();
+            _app?.Shutdown();
+        };
 
         // A Python exception that escapes a handler must not take the process
         // down - the transcription engine is in this process too.
@@ -133,6 +157,33 @@ public sealed class PanelHost
 
     /// <summary>Which lifecycle command holds the slot, or "" when idle.</summary>
     public void PostBusy(string busy) => Post(() => { if (_vm is not null) { _vm.Busy = busy; } });
+
+    /// <summary>
+    /// The opening document - the same payload the browser gets on connect:
+    /// schema, settings, status, devices, models, presets, history, engine
+    /// and the busy slot, as one JSON object.
+    /// </summary>
+    public void PostHello(string json) => Post(() => _vm?.ApplyHello(json));
+
+    /// <summary>
+    /// One event off the engine's stream, as (kind, JSON payload) - the same
+    /// pairs the websocket broadcasts.
+    /// </summary>
+    /// <remarks>
+    /// Meter frames should go through <see cref="OfferMeter"/> instead: they
+    /// arrive 8 times a second forever, and this method costs a BeginInvoke
+    /// and a dispatcher pass per call. Everything else is rare enough that
+    /// marshalling per event is the simple, correct answer.
+    /// </remarks>
+    public void PostEvent(string kind, string json)
+        => Post(() => _vm?.ApplyEvent(kind, json));
+
+    /// <summary>
+    /// Take a meter frame, on the CALLER's thread. Safe from any thread and
+    /// deliberately cheap - a parse and a field write under a lock, no
+    /// dispatcher, no binding. The 30 Hz pump inside StatusVm publishes it.
+    /// </summary>
+    public void OfferMeter(string json) => _vm?.StatusBar.OfferMeter(json);
 
     public void PostRunning(bool running, bool paused) => Post(() =>
     {

@@ -1,0 +1,34 @@
+<!--
+    HAND-WRITTEN, unlike Charcoal.xaml next to it. These are the panel's own
+    semantic keys - confidence bands, pill tones, meter tracks - which no
+    WPF-UI dictionary defines, so there is nothing to generate them from.
+    gen_theme.py regenerates its files around this one and never touches it.
+
+    Values come from webui/style.css's dark palette (ok / warn / danger /
+    violet / accent and the greys), so a word that reads as doubtful in the
+    browser panel reads as doubtful here. Edit style.css first, then mirror.
+-->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- word confidence: low is under confidence_warn, mid up to the midpoint
+         between that and 1, hi the rest. Same bands as webui/app.js:788. -->
+    <SolidColorBrush x:Key="ConfidenceLowBrush" Color="#FFFF5252" />
+    <SolidColorBrush x:Key="ConfidenceMidBrush" Color="#FFFFB300" />
+    <SolidColorBrush x:Key="ConfidenceHighBrush" Color="#FFECF4F7" />
+
+    <!-- pill / state tones -->
+    <SolidColorBrush x:Key="PanelOkBrush" Color="#FF4CAF50" />
+    <SolidColorBrush x:Key="PanelWarnBrush" Color="#FFFFB300" />
+    <SolidColorBrush x:Key="PanelDangerBrush" Color="#FFFF5252" />
+    <SolidColorBrush x:Key="PanelVioletBrush" Color="#FF7C4DFF" />
+    <SolidColorBrush x:Key="PanelAccentBrush" Color="#FF00BCD4" />
+    <SolidColorBrush x:Key="PanelAccentSoftBrush" Color="#1F00BCD4" />
+
+    <!-- text tiers and chrome -->
+    <SolidColorBrush x:Key="PanelText2Brush" Color="#FF8FA6B2" />
+    <SolidColorBrush x:Key="PanelMutedBrush" Color="#FF5F7885" />
+    <SolidColorBrush x:Key="PanelLineBrush" Color="#FF283B45" />
+    <SolidColorBrush x:Key="PanelCardBrush" Color="#FF141E24" />
+    <SolidColorBrush x:Key="PanelTrackBrush" Color="#FF0D1417" />
+</ResourceDictionary>

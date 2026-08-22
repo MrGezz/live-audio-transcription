@@ -1,12 +1,13 @@
-# Desktop panel (WPF) — pending work
+# Desktop panel (WPF) — work record
 
-Status of the `ui/` front end as of the commit that adds this file.
-Branch `feature/ui-wpf`.
+Status of the `ui/` front end. Branch `feature/ui-wpf`.
 
-The foundation is built and runs. The panel is a shell: it themes, it binds,
-its buttons reach Python. None of the five content tabs exist yet. This file
-is what remains, why the shape is what it is, and the measurements that
-settled the arguments — so none of it has to be re-derived.
+**The seven steps this file used to list as remaining are done.** The panel
+has its five content tabs, is wired into `app.py` behind `--wpf`, and
+degrades to "no desktop panel" when the runtime is missing. This file stays
+because half of it was never a to-do list: the decisions and the measurements
+that settled the arguments are recorded below so none of it has to be
+re-derived.
 
 ---
 
@@ -27,8 +28,11 @@ No command-name string, no socket, no port, no token, no dispatch table.
 Rename `Restart` and the build breaks on both sides rather than at runtime.
 
 `--web` and `--wpf` are independent. Both can be open at once — `_lifecycle`'s
-single busy slot already makes that safe. The browser panel keeps browser-mic
-streaming, which has no WPF equivalent and is not being ported.
+single busy slot already makes that safe. The browser panel keeps *remote*
+audio streaming (a phone's microphone into this machine's engine); the
+Engine tab's capture card is the local equivalent, pushing this machine's
+microphone or system audio through `IEngineBridge.PushAudioChunk` into the
+same `Pipeline.feed` the socket uses.
 
 ---
 
@@ -61,139 +65,120 @@ bind — which is worse markup/logic separation than `webui/app.js` has today.
 
 ---
 
-## What works now
+## What shipped, step by step
 
-| Piece | State |
-| --- | --- |
-| `ui/LiveTranscription.Ui.csproj` | .NET 8 WPF library, WPF-UI 4.3.0 from NuGet |
-| `ui/Bridge/IEngineBridge.cs` | 34 methods — 12 typed lifecycle calls, the rest JSON documents |
-| `ui/Bridge/RelayCommand.cs` | try/catch on Execute, explicit `RaiseCanExecuteChanged` |
-| `ui/PanelHost.cs` | STA host, theme merge, async marshalling, unhandled-exception hook |
-| `ui/ViewModels/MainVm.cs` | the busy gate every lifecycle button hangs off |
-| `ui/Views/MainWindow.xaml` | shell: TitleBar, top actions, banner. **No tabs.** |
-| `ui/Themes/Charcoal*.xaml` | 394 brushes × 2 themes, generated |
-| `ui/tools/gen_theme.py` | regenerates the themes from the live dictionary |
-| `ui/tools/shot.py` | renders the panel to a PNG for review |
-| `wpf_panel.py` | the Python half: bridge implementation and host |
-| `build_ui.cmd` | `dotnet publish` into `ui/runtime` |
+The estimates this file used to carry (17–23 days for the remainder) are kept
+here only as the record of what each step was scoped as.
 
-Tests passing: boundary smoke 13/13, environment gate 11/11.
+### 1. Settings pane — done
 
-**Nothing is wired into `app.py` yet.** The panel currently runs only against
-a stub engine. That is step 5 below.
+`ui/Views/FieldTemplates.xaml` holds the seven control templates plus the
+shared row chrome; `FieldTemplateSelector` maps `kind` -> template and throws
+on an unmapped one; `SettingsVm.KnownKinds` refuses it at startup too, so an
+eighth kind fails loudly twice instead of rendering as a TextBox that writes
+the wrong JSON type. The pane is 8 groups over 61 fields (60 plus the new
+`wpf` toggle itself) and nothing in the XAML names a setting.
 
-### Running what exists
+- Every numeric field in the live schema declares both bounds (verified),
+  so int and float render as slider + NumberBox with no fallback shape.
+- `path` gets a Browse button — `OpenFileDialog`, except `output`, which gets
+  a save dialog because the file it names usually does not exist yet.
+  `color` gets a swatch-popup picker over a hex box; free text still goes
+  through `settings._coerce`, which is where "#zz" actually gets refused.
+- The 26 `showIf` conditions evaluate by `JsonValueKind` in
+  `ConditionEvaluator` (the naive `ToString()` comparison hides 12 of them
+  forever), and `SettingsVm.LoadSchema` now runs the startup self-test its
+  remarks promised.
+- The advanced filter hides the 19 advanced fields; the search box filters
+  by key, label, help and CLI flag and auto-expands matching groups.
+- `REMOTE_LOCKED` fields stay **editable** here and carry a "local only"
+  chip explaining why the same row is dead in the browser.
+- Devices and languages fill dynamically, with the `(not available)` entry
+  keeping a vanished device selected instead of lying about the config.
+- Edits debounce 250 ms into ONE patch (cross-field validation needs
+  buffer+slide together), and a refused key snaps back via the
+  absence-from-`changed` test.
+- `model` is the one key special-cased by name (a picker over `_models`),
+  matching webui/app.js:381 — the two panels must agree what that field IS.
 
-```
-.\build_ui.cmd                                    once, needs the .NET 8 SDK
-.venv\Scripts\python.exe ui\tools\gen_theme.py    only after a WPF-UI upgrade
-.venv\Scripts\python.exe ui\tools\shot.py         renders panel.png
-```
+### 2. Transcript — done
 
----
+`ui/Views/TranscriptTab.xaml`. The ItemsControl carries an explicit
+`VirtualizingStackPanel` with recycling and an item-scrolling ScrollViewer —
+its default panel is a plain StackPanel that realises all ~12,000 visual
+elements of a 600-line transcript. Per-word confidence renders as `Run`s via
+the `WordInlines` attached property (Inlines is not a dependency property, so
+it cannot be bound), a times column shows wall clock + session clock,
+language tags colour by backend, and autoscroll follows the two-flag contract
+in `TranscriptVm`: what the user asked for, and where the viewport actually
+is, so a new caption never yanks a reader back to the bottom.
 
-## Remaining work
+### 3. Meters, pills, toasts, banner — done
 
-Ordered. Each step is independently verifiable.
+`StatusVm` pulls meter frames on a 30 Hz `DispatcherTimer` from a field the
+8 Hz `OfferMeter` parks under a lock — no `PropertyChanged` per frame, and
+`Panel.event` routes `meter` straight to it, skipping the dispatcher
+entirely. Four pills (backend / source / xRT / language), the log unread
+badge that only counts warnings you have not looked at, the offline dim, and
+the toast stack with the 4.5 s / 9 s / 30 s / never lifetimes — hovering
+holds a toast open, because a question that expires has been answered "no".
+The five-state run banner (busy / not running / capture dead / no backend /
+hidden) lives in `MainVm.RefreshRunBanner` with its fixes as buttons inside
+it. These are four DISTINCT "something is wrong" channels, and keeping them
+distinct is most of the value.
 
-### 1. Settings pane — 4–5 days
+The three interactive toasts: slower-than-real-time offers the smaller
+models from `_models` and restarts the server with the picked one;
+auto-detect wandering offers to pin the commonest language; a pinned server
+backend with nothing answering offers Start-the-server / use-the-CPU.
 
-The largest single chunk, and the reason the ViewModels are C#.
+### 4. Engine and benchmark tabs — done
 
-`settings.schema_json()` is 8 groups, 60 fields, 101 languages. Field kinds:
-`bool` 14, `float` 18, `int` 11, `choice` 6, `str` 5, `path` 4, `color` 2.
+`EngineTab` has the session card, the whisper-server card (three port states
+— answering / held-but-silent / free — because "not running" sends people to
+press Start against a taken port), the model picker with the launcher-default
+first entry, and the local capture card. `BenchmarkTab` runs the measurement
+through the bridge on the LIVE backend, streams rows in as events, labels
+synthetic runs as the encoder-floor lower bound they are, and applies
+strategy+buffer+slide as the one patch the validator will accept.
 
-- Seven `DataTemplate`s in one `FieldTemplates.xaml`, chosen by a
-  `DataTemplateSelector` keyed on `kind`.
-- `path` (4 fields) needs `OpenFileDialog`; `color` (2 fields) needs a picker.
-- 26 `showIf` conditions with type-heterogeneous values — `{"vad":[true]}`,
-  `{"capture":["file"]}`. Compare as `JsonElement` by kind. A naive
-  `ToString()` comparison makes every boolean-gated field permanently
-  invisible, which is 12 of the 26.
-- The advanced filter (19 fields), `remoteLocked` (5 fields — but see the
-  note below: this panel is local, so they should be *editable* here).
-- Dynamic choices for devices and languages, with the
-  `"<value>  (not available)"` fallback for a device that has gone away.
-- Debounce on change, snap back on `ack.errors`.
+### 5. `app.py` integration — done
 
-Acceptance: adding a `Field(...)` to `settings.py` makes a control appear with
-no C# or XAML edit. Add a startup assert that every `kind` in the live schema
-maps to a template, so an eighth kind fails loudly instead of silently
-rendering as a TextBox.
+The predicted 40–80 line diff, roughly as predicted. The nine
+`self.server is not None` guard sites collapsed into `_has_front_end()` and
+`_notify(kind, data)` — the two-subscriber fan-out. The two that mattered
+most: `_main_loop`'s exit condition and `_finished()` now count the panel,
+so Stop with only the WPF window attached no longer tears the process down
+under it; and `_broadcast_engine` no longer early-outs without a server,
+which is what makes busy transitions observable to a WPF-only front end at
+all. Also: panel construction in `run()` behind the new `wpf` Field,
+`_request_exit` asks the panel to close **without joining** (the Exit button
+runs ON the panel's dispatcher; `shutdown()` on the main thread does the
+joining close), `_export_payload` lifted out of `_export` for both front
+ends, launcher wiring (`run_pipeline.cmd` option [5], `--wpf`), and the
+graceful-degrade path: missing pythonnet or Desktop runtime prints one
+actionable line and transcription carries on.
 
-### 2. Transcript — 2.5 days
+### 6. Soak — harness shipped, four-hour run still owed on real hardware
 
-**Must be virtualized.** `ItemsControl` does not virtualize by default; a
-600-line transcript with per-word confidence `Run`s is roughly 12,000 visual
-elements. Needs an explicit `VirtualizingStackPanel` `ItemsPanelTemplate` plus
-`VirtualizingPanel.IsVirtualizing`.
+`ui/tools/soak.py`: synthetic meter at 8 Hz plus transcript, state, log,
+perf and engine events through the real bridge, with a Python thread
+hammering `ApplySettings` (and its settings echo — `HydrateSettings` plus
+`Refilter` over all 61 fields is the heaviest binding path the panel has).
+RSS, handle count and managed heap sampled every 30 s from the CLR itself;
+the verdict compares the last quarter against the second. The 32,000-round-
+trip boundary soak already showed RSS plateauing after round 3 and flat
+handles, so a pass is expected — but if the full run fails, the View layer
+moves behind a WebSocket client and everything after step 1 changes. Run it
+on Windows: `.venv\Scripts\python.exe ui\tools\soak.py` (or `--minutes 5`
+as the smoke version).
 
-Per-word confidence colouring, times column, language tags, autoscroll with a
-"stick to bottom unless scrolled up" rule.
+### 7. Packaging and docs — done
 
-### 3. Meters, pills, toasts — 3–4 days
-
-- Level meter at 8 Hz. Do **not** push a `PropertyChanged` per frame — hold
-  the value in a field and pull it on a 30 Hz `DispatcherTimer`.
-- Four status pills, log unread badge, offline dim.
-- Three interactive toasts with their own controls and 4.5 s / 9 s / 30 s /
-  never lifetimes.
-- The five-state run banner.
-
-These are four *distinct* "something is wrong" channels and they are not
-interchangeable — that distinction is most of the value.
-
-### 4. Engine and benchmark tabs — 2.5 days
-
-whisper-server card (state by port, PID, image, model picker, Start / Restart
-/ Stop) and the benchmark runner.
-
-### 5. `app.py` integration — 2.5–3 days
-
-Realistic diff **40–80 lines**, not the dozen it looks like.
-
-There are nine `self.server is not None` / `is None` guard sites — lines 148,
-175, 186, 245, 280, 316, 564, 768, 786 — and every one is really asking *does
-a front end exist / can it receive this*. Collapse into one
-`_has_front_end()` and one `_notify(kind, data)` subscriber list.
-
-Two matter more than the rest: if `_main_loop`'s exit condition and
-`_finished()` are not amended, pressing Stop with no browser attached tears
-the process down while the WPF window is still on screen — the same class of
-bug commit `9ac67be` fixed for the overlay.
-
-Also needed: panel construction in `run()`, a `_request_exit` arm calling
-`Dispatcher.InvokeShutdown()`, a `wpf` bool `Field` in `settings.py`, launcher
-wiring, and a graceful-degrade path when pythonnet or the Desktop runtime is
-missing (`--wpf` failing must mean "no desktop panel", never "no
-transcription").
-
-`_broadcast_engine` currently returns early when `self.server is None`, so
-with the WPF panel as the only front end **no busy transition is observable**.
-That is why the subscriber list is required and not cosmetic.
-
-One method the bridge already calls does not exist yet: `App._export_payload`.
-The export logic is inline in `App._export` (app.py:476–506) and needs
-lifting out so both front ends can share it.
-
-### 6. Soak — 1 day
-
-Four hours of synthetic meter (8 Hz) plus transcript, state and log through
-the real bridge, with a Python thread hammering `ApplySettings`. Watch RSS,
-handle count, managed heap.
-
-Run this **before** the content tabs, not after. A 32,000-round-trip soak
-already showed RSS plateauing after round 3 and flat handles, so it is
-expected to pass — but if it fails, the View layer moves behind a WebSocket
-client instead and everything after step 1 changes.
-
-### 7. Packaging and docs — 1 day
-
-README, CONTRIBUTING, SETUP notes. The `build_ui.cmd`-then-commit-`ui/runtime`
-discipline. `requirements.txt` gains `pythonnet>=3.1.0`.
-
-**Estimate for the remainder: 17–23 days.** Original full-parity estimate was
-24–31; the foundation accounts for the difference.
+README gained the Desktop panel section and the folder map; CONTRIBUTING
+gained the `build_ui.cmd`-then-commit-`ui/runtime` discipline and the bridge
+threading rules as invariants 11–13; `requirements.txt` gained
+`pythonnet>=3.1.0`.
 
 ---
 
@@ -204,14 +189,17 @@ Never a `ProjectReference` to a local wpfui checkout: every path in this
 project stays relative to the repo root, and a local clone is liable to sit
 some commits past its tag — silent version drift.
 
-**`ui/runtime` is committed.** 6.4 MB of publish output, so a fresh clone runs
+**`ui/runtime` is committed.** ~6.5 MB of publish output, so a fresh clone runs
 the panel with only the .NET Desktop runtime — no SDK, no restore, no network.
 This cuts against the repo's habit of gitignoring binaries (`_models/*`,
 `_whisper.cpp/`); the alternative costs every cloner the SDK. Re-run
 `build_ui.cmd` and commit the output after any `ui/` change. Nothing enforces
-that but discipline.
+that but discipline (now written down as CONTRIBUTING invariant 11).
 
-**The theme is generated, not written.** See below.
+**The theme is generated, not written.** See below. The panel's OWN semantic
+keys (confidence bands, pill tones, meter tracks) live in the hand-written
+`ui/Themes/Panel.xaml` / `PanelLight.xaml`, merged after the generated pair —
+they exist in no WPF-UI dictionary, so there is nothing to generate them from.
 
 **Glassmorphism is not being ported.** `webui/style.css` uses per-surface
 `backdrop-filter: blur(24px)`, which blurs *the app's own content*. WPF has no
@@ -222,12 +210,19 @@ on Windows 10 and over RDP) defeats it entirely. The agreed target is
 charcoal + cyan + Fluent depth. Ambient glows, if wanted, are `Ellipse` +
 `RadialGradientBrush` — never `BlurEffect` at a large radius.
 
-**`REMOTE_LOCKED` does not apply here.** The five `web_*` settings are
-stripped from browser patches because that rule is enforced by transport, not
-by locality. This panel is local by construction, so `ApplySettings` passes
-`remote=False` and they stay editable — a desktop panel forbidden from
-configuring the listener would be obeying a rule written for a different
-threat.
+**`REMOTE_LOCKED` does not apply here.** The web_* settings are stripped from
+browser patches because that rule is enforced by transport, not by locality.
+This panel is local by construction, so `ApplySettings` passes `remote=False`
+and they stay editable — a desktop panel forbidden from configuring the
+listener would be obeying a rule written for a different threat. (`wpf`
+itself joined REMOTE_LOCKED for the mirror-image reason: whether a window
+opens on the host machine belongs to whoever is sitting at it.)
+
+**Closing the window is not exiting the program.** The window closing is the
+front end going away — exactly a closed browser tab — and the engine keeps
+whatever it was doing; `PanelHost` hooks `Closed` to end the message loop so
+`Panel.alive` tells the truth. The panel's power button is the one that calls
+`RequestExit`.
 
 ---
 
@@ -270,7 +265,9 @@ thread throws `InvalidOperationException`. Nothing in `wpf_panel.py` touches
 the window directly; state goes in through `PanelHost.Post*`, which marshals
 with `BeginInvoke`. Never a blocking `Dispatcher.Invoke` from a bridge method —
 that, against a UI thread waiting on the GIL, is the one deadlock this design
-can produce.
+can produce. The same rule wearing another hat: `Panel.close()` joins the WPF
+thread, so it may never be called FROM a bridge method — `request_close()`
+exists for the Exit button's path.
 
 **The CLR is apartment-neutral; `sounddevice` is not.** Importing
 `sounddevice` takes the main thread to `MAIN_STA` before any CLR exists.
@@ -280,6 +277,24 @@ returning the same 2 devices and inputs the same 9 either way. The panel gets
 its own `.NET`-created STA thread; the main thread is never touched, because
 `overlay.py`'s Tk mainloop owns it.
 
+**An ItemsControl does not virtualize.** Its default panel is a plain
+StackPanel and its default template has no ScrollViewer; both must be
+supplied, plus `ScrollViewer.CanContentScroll="True"`, or a long transcript
+realises every row it will ever show. `VirtualizationMode="Recycling"`
+containers get handed a *different* line, which is why `WordInlines` rebuilds
+on every attached-property change rather than only on first render.
+
+**Popup content is not in the visual tree you think.** Walking visual parents
+from inside a Popup ends at an internal `PopupRoot` whose parent is nothing;
+the `Popup` itself is only reachable as the *logical* `Parent` of its child.
+The colour swatch's close-after-pick walks visual parents while checking
+`fe.Parent is Popup` at each step for exactly this reason.
+
+**A method group with a return value is not an `Action`.** C# lambdas may
+discard a result; method group conversions may not (CS0407). `MainVm.Toast`
+returns the `ToastVm` (the interactive toasts need it back), so the sub-VMs
+receive a wrapping local function, not the method group.
+
 **`cmd` will not resolve a bare batch name.** `build_ui.cmd` must be invoked as
 `.\build_ui.cmd`. Same trap as commit `9ac67be`.
 
@@ -287,15 +302,21 @@ its own `.NET`-created STA thread; the main thread is never touched, because
 
 ## Open questions
 
-1. **Committed `ui/runtime` vs a fetch script.** Currently committed. Says
-   6.4 MB in history per WPF-UI version, permanently. The alternative — a
+1. **Committed `ui/runtime` vs a fetch script.** Currently committed. Costs
+   ~6.5 MB in history per WPF-UI version, permanently. The alternative — a
    `fetch_wpfui.cmd` following the `_models/` precedent — costs every cloner
    the .NET SDK and a network restore.
-2. **Light theme.** `CharcoalLight.xaml` is generated but has never been
-   rendered or reviewed. The web panel has a light palette; whether the
+2. **Light theme.** `CharcoalLight.xaml` and `PanelLight.xaml` are generated
+   and written respectively, and `wpf_panel.Panel(dark=False)` merges them —
+   but the light pair has never been rendered or reviewed, and nothing
+   exposes the switch yet. The web panel has a light palette; whether the
    desktop panel needs one is undecided.
 3. **Standalone executable.** The same assembly could ship a `Main` that
    speaks the WebSocket protocol, giving a panel that runs on a different
    machine from the engine. Deliberately cut from v1 — it is a complete second
    client (17 inbound message types, 16 commands, auth, reconnect), which is
    three days, not the one it looks like.
+4. **The four-hour soak on real hardware.** The harness is in
+   `ui/tools/soak.py`; the run itself needs a Windows desktop session and has
+   not happened yet. Until it has, treat any large new retained-state feature
+   in the panel as unproven against leaks.

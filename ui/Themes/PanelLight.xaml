@@ -1,0 +1,24 @@
+<!--
+    HAND-WRITTEN - the light half of Panel.xaml, from webui/style.css's
+    html[data-theme="light"] palette. See Panel.xaml for what these keys are.
+-->
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <SolidColorBrush x:Key="ConfidenceLowBrush" Color="#FFD32F2F" />
+    <SolidColorBrush x:Key="ConfidenceMidBrush" Color="#FFF57F17" />
+    <SolidColorBrush x:Key="ConfidenceHighBrush" Color="#FF263238" />
+
+    <SolidColorBrush x:Key="PanelOkBrush" Color="#FF2E7D32" />
+    <SolidColorBrush x:Key="PanelWarnBrush" Color="#FFF57F17" />
+    <SolidColorBrush x:Key="PanelDangerBrush" Color="#FFD32F2F" />
+    <SolidColorBrush x:Key="PanelVioletBrush" Color="#FF651FFF" />
+    <SolidColorBrush x:Key="PanelAccentBrush" Color="#FF0097A7" />
+    <SolidColorBrush x:Key="PanelAccentSoftBrush" Color="#190097A7" />
+
+    <SolidColorBrush x:Key="PanelText2Brush" Color="#FF546E7A" />
+    <SolidColorBrush x:Key="PanelMutedBrush" Color="#FF78909C" />
+    <SolidColorBrush x:Key="PanelLineBrush" Color="#FFCFD8DC" />
+    <SolidColorBrush x:Key="PanelCardBrush" Color="#FFFFFFFF" />
+    <SolidColorBrush x:Key="PanelTrackBrush" Color="#FFECEFF1" />
+</ResourceDictionary>

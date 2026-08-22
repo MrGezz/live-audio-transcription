@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
+using System.Windows.Media;
 using Wpf.Ui.Controls;
 
 namespace LiveTranscription.Ui.Converters;
@@ -56,4 +57,64 @@ public sealed class NotConverter : IValueConverter
     public object ConvertBack(object? value, Type targetType, object? parameter,
                               CultureInfo culture)
         => value is not bool b || !b;
+}
+
+/// <summary>
+/// 0..1 as a star <see cref="GridLength"/>, so a meter bar can be drawn as two
+/// star-sized columns instead of pixel arithmetic against ActualWidth.
+/// </summary>
+/// <remarks>
+/// Pass "rest" as the parameter for the complement column. The fill and its
+/// remainder always sum to 1*, so the bar tracks the track's width through
+/// every resize with no code-behind and no size-changed handler - which is
+/// what keeps a 30 Hz meter update from also being a 30 Hz layout
+/// measurement.
+/// </remarks>
+public sealed class StarWidthConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter,
+                          CultureInfo culture)
+    {
+        double v = value is double d && !double.IsNaN(d) ? d : 0.0;
+        v = Math.Min(1.0, Math.Max(0.0, v));
+        if (string.Equals(parameter as string, "rest", StringComparison.OrdinalIgnoreCase))
+        {
+            v = 1.0 - v;
+        }
+
+        return new GridLength(v, GridUnitType.Star);
+    }
+
+    public object ConvertBack(object? value, Type targetType, object? parameter,
+                              CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+/// <summary>
+/// "#rrggbb" text as a brush, for the colour field's live swatch. Anything
+/// unparseable renders transparent rather than throwing - the text box is
+/// being typed into, and "#ff" is a state every valid colour passes through.
+/// </summary>
+public sealed class ColorTextConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter,
+                          CultureInfo culture)
+    {
+        try
+        {
+            if (ColorConverter.ConvertFromString(value as string) is Color c)
+            {
+                return new SolidColorBrush(c);
+            }
+        }
+        catch (FormatException)
+        {
+        }
+
+        return Brushes.Transparent;
+    }
+
+    public object ConvertBack(object? value, Type targetType, object? parameter,
+                              CultureInfo culture)
+        => throw new NotSupportedException();
 }
