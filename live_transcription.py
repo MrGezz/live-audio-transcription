@@ -113,9 +113,10 @@ def main(argv=None):
         audio_sources.print_devices()
         return 0
 
-    # The panel has its own picker, and a prompt would block the process before
-    # it ever gets far enough to serve the page that could answer it.
-    if not settings["web"]:
+    # The panels have their own pickers, and a prompt would block the process
+    # before it ever gets far enough to open the page or window that could
+    # answer it.
+    if not settings["web"] and not settings["wpf"]:
         choose_device(settings)
 
     App(settings).run()

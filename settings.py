@@ -61,7 +61,8 @@ GROUPS = [
     ("decoding", "Decoding", "Whisper decode parameters, sent per request."),
     ("output", "Output", "Transcript file and word confidence."),
     ("overlay", "Overlay", "The on-screen caption window."),
-    ("web", "Web UI", "This control panel's own listener."),
+    ("web", "Control panels", "The browser panel's listener, and the "
+     "desktop panel."),
 ]
 
 
@@ -502,6 +503,12 @@ SCHEMA = [
           cli="--web-token", rebuild="restart", placeholder="(none)"),
     Field("web_open", "bool", True, "web", "Open a browser on start",
           cli="--no-web-open", cli_negate=True, rebuild="restart"),
+    Field("wpf", "bool", False, "web", "Desktop panel (WPF)",
+          "A native window that calls the engine directly - no listener, no "
+          "port, no token. Needs the .NET 8 Desktop Runtime and pythonnet; "
+          "missing either just means no panel, transcription is unaffected. "
+          "Independent of the web panel - both can be open at once.",
+          cli="--wpf", rebuild="restart"),
 ]
 
 BY_KEY = dict((f.key, f) for f in SCHEMA)
@@ -510,8 +517,10 @@ DEFAULTS = dict((f.key, f.default) for f in SCHEMA)
 # Options a browser is not allowed to change, whatever it sends. A page served
 # to the network must not be able to point --model at an arbitrary path or
 # move the listener out from under itself; those are decisions for whoever
-# started the process.
-REMOTE_LOCKED = ("web", "web_host", "web_port", "web_token", "web_open")
+# started the process. "wpf" is here for the same reason: whether a window
+# opens on the host machine belongs to whoever is sitting at it.
+REMOTE_LOCKED = ("web", "web_host", "web_port", "web_token", "web_open",
+                 "wpf")
 
 
 class SettingsError(ValueError):

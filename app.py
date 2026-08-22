@@ -73,7 +73,9 @@ class App(object):
         self.pipeline = Pipeline(self.settings, emit=self._on_event)
         self.overlay = None
         self.server = None
+        self.panel = None
         self._server_proc = None
+        self._engine_poll_started = False
         self._stop = threading.Event()
         self._last_overlay_style = None
         # Enumerating capture devices costs 585 ms the first time on this
@@ -100,6 +102,10 @@ class App(object):
 
         if self.settings["web"]:
             self._start_server()
+        if self.settings["wpf"]:
+            self._start_wpf()
+        if self._has_front_end():
+            self._start_engine_poll()
 
         try:
             self._main_loop()
@@ -145,7 +151,7 @@ class App(object):
             # program rather than opening a fresh window for it to close again.
             if self._finished():
                 break
-            if not self.pipeline.alive() and self.server is None:
+            if not self.pipeline.alive() and not self._has_front_end():
                 break
 
             if self.settings["overlay"]:
@@ -172,9 +178,39 @@ class App(object):
         """
         if not self.pipeline.drained():
             return False
-        if self.server is not None:
+        if self._has_front_end():
             return False
         return True
+
+    def _has_front_end(self):
+        """
+        Is anything attached that can receive events and give orders?
+
+        This is the question every one of the old `self.server is not None`
+        guards was really asking. The WPF panel counts exactly like a
+        browser: while either is up, a stopped pipeline is undoable and a
+        finished file is still there to read and export - and with neither,
+        pressing Stop from a front end that then vanished must not leave a
+        deaf process running forever.
+        """
+        panel = self.panel
+        return self.server is not None \
+            or (panel is not None and panel.alive)
+
+    def _notify(self, kind, data):
+        """
+        Fan one event out to every attached front end.
+
+        The subscriber list PENDING_WORK.md promised, in its simplest form:
+        two subscribers, both optional. This is deliberately NOT guarded by
+        _has_front_end - each front end checks itself, so a panel that died
+        mid-session costs nothing and breaks nothing.
+        """
+        if self.server is not None:
+            self.server.broadcast({"type": kind, "data": data})
+        panel = self.panel
+        if panel is not None and panel.alive:
+            panel.event(kind, data)
 
     def shutdown(self):
         self._stop.set()
@@ -186,6 +222,15 @@ class App(object):
         if self.server is not None:
             try:
                 self.server.stop()
+            except Exception:
+                pass
+        if self.panel is not None:
+            try:
+                # The joining close, and this is the one place it is safe:
+                # shutdown runs on the main thread, never on the panel's
+                # dispatcher. A message loop still draining while the
+                # interpreter finalizes is a crash on the way out.
+                self.panel.close()
             except Exception:
                 pass
         self.pipeline.stop()
@@ -242,7 +287,7 @@ class App(object):
             return False
         if self.pipeline.alive():
             return True
-        return self.server is not None and not self._stop.is_set()
+        return self._has_front_end() and not self._stop.is_set()
 
     def _overlay_style(self):
         return dict((f.key, self.settings[f.key]) for f in settings_mod.SCHEMA
@@ -277,8 +322,7 @@ class App(object):
 
     # -- events -----------------------------------------------------------
     def _on_event(self, kind, data):
-        if self.server is not None:
-            self.server.broadcast({"type": kind, "data": data})
+        self._notify(kind, data)
         if kind == "settings":
             self.settings.update(data)
             self._sync_overlay()
@@ -305,7 +349,7 @@ class App(object):
         target = "EN" if entry.get("translated") else code.upper()
         print("[{0}→{1}] {2}".format(code, target, entry["text"]))
 
-    # -- web server -------------------------------------------------------
+    # -- front ends -------------------------------------------------------
     def _rescan_devices(self):
         """Refresh the device cache. Never on the event-loop thread."""
         try:
@@ -313,8 +357,7 @@ class App(object):
         except Exception as e:
             self.pipeline.log("warn", "Could not list devices: {0}".format(e))
             return
-        if self.server is not None:
-            self.server.broadcast({"type": "devices", "data": self._devices})
+        self._notify("devices", self._devices)
 
     def _start_server(self):
         from wsserver import WSServer
@@ -342,13 +385,56 @@ class App(object):
             print("[web] WARNING: listening on {0} with no access token. "
                   "Anyone on this network can read the transcript and change "
                   "settings.".format(s["web_host"]))
-        threading.Thread(target=self._engine_poll, name="engine-poll",
-                         daemon=True).start()
         if s["web_open"]:
             threading.Timer(0.4, webbrowser.open, (self.server.url,)).start()
 
-    def _ws_open(self, client):
-        client.send({"type": "hello", "data": {
+    def _start_wpf(self):
+        """
+        Open the desktop panel, or say once why not and carry on.
+
+        --wpf failing means "no desktop panel", never "no transcription": a
+        missing .NET runtime or pythonnet on someone else's machine must not
+        be the difference between the program working and not. wpf_panel puts
+        an actionable sentence in PanelUnavailable for exactly this print.
+        """
+        try:
+            import wpf_panel
+        except ImportError as e:
+            print("[wpf] unavailable ({0}) - running without the desktop "
+                  "panel.".format(e))
+            return
+        # The panel reads both caches in its opening document, so prime them
+        # the way _start_server does - unless the web server already did.
+        if not self._devices["loopback"] and not self._devices["input"]:
+            self._rescan_devices()
+        if not self._engine:
+            self._engine = self._engine_status()
+        try:
+            panel = wpf_panel.Panel(self)
+            panel.start()
+        except wpf_panel.PanelUnavailable as e:
+            print("[wpf] {0}".format(e))
+            print("[wpf] The desktop panel is off; transcription carries on.")
+            return
+        except Exception as e:  # noqa: BLE001 - degrade, never die, see above
+            print("[wpf] The desktop panel could not start ({0}: {1}); "
+                  "transcription carries on.".format(type(e).__name__, e))
+            return
+        self.panel = panel
+        panel.hello(self._hello_payload())
+        print("Desktop panel: open.")
+
+    def _start_engine_poll(self):
+        """The whisper-server poller, once, however many front ends exist."""
+        if self._engine_poll_started:
+            return
+        self._engine_poll_started = True
+        threading.Thread(target=self._engine_poll, name="engine-poll",
+                         daemon=True).start()
+
+    def _hello_payload(self):
+        """The opening document every front end hydrates from, wire or not."""
+        return {
             "version": VERSION,
             "schema": settings_mod.schema_json(),
             "settings": dict(self.settings),
@@ -359,7 +445,10 @@ class App(object):
             "history": self.pipeline.history(200),
             "engine": dict(self._engine),
             "busy": self._busy,
-        }})
+        }
+
+    def _ws_open(self, client):
+        client.send({"type": "hello", "data": self._hello_payload()})
 
     def _ws_close(self, client, reason):
         pass
@@ -462,6 +551,13 @@ class App(object):
         self._stop.set()
         if self.overlay is not None:
             self.overlay.close()
+        panel = self.panel
+        if panel is not None:
+            # request_close, never close: the Exit button lands here ON the
+            # panel's own dispatcher thread, and close() joins that thread -
+            # which from itself is a deadlock for the whole timeout. The
+            # joining close belongs to shutdown(), on the main thread.
+            panel.request_close()
 
     def _run_benchmark(self, args):
         buffers = args.get("buffers") or [4, 8, 16, 24]
@@ -474,15 +570,22 @@ class App(object):
 
     # -- transcript export ------------------------------------------------
     def _export(self, args):
+        return self._export_payload(args.get("format", "txt"))
+
+    def _export_payload(self, fmt):
         """
         Render the session so far in any format, without having been saving.
 
         Deciding at the end that you wanted subtitles used to mean you did not
         have them. The captions carry their word timings either way, so this is
         just a re-render of what is already in memory.
+
+        Shared by both front ends: the browser gets it as an `export` message
+        and downloads it, the desktop panel calls it over the bridge and puts
+        the content behind a save dialog. Same payload either way -
+        {filename, format, count, content}.
         """
         import transcript as tr
-        fmt = args.get("format", "txt")
         if fmt not in tr.EXTENSIONS:
             fmt = "txt"
         entries = self.pipeline.history(0)
@@ -561,9 +664,7 @@ class App(object):
         return {"deleted": safe, "presets": self._list_presets()}
 
     def _broadcast_presets(self):
-        if self.server is not None:
-            self.server.broadcast({"type": "presets",
-                                   "data": self._list_presets()})
+        self._notify("presets", self._list_presets())
 
     # -- lifecycle commands ------------------------------------------------
     ENGINE_STOP_WAIT_SEC = 8.0
@@ -765,13 +866,15 @@ class App(object):
         self._broadcast_engine()
 
     def _broadcast_engine(self, extra=None):
-        if self.server is None:
-            return
+        # No early-out on "no server": with the WPF panel as the only front
+        # end this is the one channel that makes a busy transition observable
+        # at all - _lifecycle announces the slot through here, and a panel
+        # that never hears it never re-enables its buttons.
         data = dict(self._engine)
         data["busy"] = self._busy
         if extra:
             data.update(extra)
-        self.server.broadcast({"type": "engine", "data": data})
+        self._notify("engine", data)
 
     def _engine_poll(self):
         """
@@ -783,7 +886,7 @@ class App(object):
         mid-restart would contradict it.
         """
         while not self._stop.wait(ENGINE_POLL_SEC):
-            if self._busy or self.server is None:
+            if self._busy or not self._has_front_end():
                 continue
             try:
                 fresh = self._engine_status()
