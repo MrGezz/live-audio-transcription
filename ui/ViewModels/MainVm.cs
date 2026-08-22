@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Text.Json;
 using System.Windows.Threading;
@@ -37,6 +38,13 @@ public sealed class MainVm : ViewModelBase
     private int _selectedTab;
     private bool _modelHintShown;
     private bool _languageHintShown;
+    private bool _serverOfferShown;
+    private bool _hydrated;
+    private bool _sourceAlive;
+    private bool _hasBackend;
+    private string _stateError = "";
+    private string _sessionState = "stopped";
+    private string _sessionDetail = "";
     private string _version = "";
 
     public MainVm(IEngineBridge bridge, Dispatcher dispatcher)
@@ -44,13 +52,19 @@ public sealed class MainVm : ViewModelBase
         _bridge = bridge;
         _dispatcher = dispatcher;
 
+        // A method group with a return value does not convert to an Action,
+        // so the toast entry point the sub-VMs get is this thin wrapper; only
+        // MainVm's own toasts ever need the ToastVm back.
+        void toast(string severity, string title, string message)
+            => Toast(severity, title, message);
+
         StatusBar = new StatusVm();
         Transcript = new TranscriptVm();
         Log = new LogVm(n => StatusBar.UnreadLogs = n);
-        SettingsPane = new SettingsVm(bridge, dispatcher, Toast);
-        Engine = new EngineVm(bridge, () => IsIdle, Toast);
-        Benchmark = new BenchmarkVm(bridge, SettingsPane, Toast);
-        Audio = new AudioVm(bridge, SettingsPane, Toast);
+        SettingsPane = new SettingsVm(bridge, dispatcher, toast);
+        Engine = new EngineVm(bridge, () => IsIdle, toast);
+        Benchmark = new BenchmarkVm(bridge, SettingsPane, toast);
+        Audio = new AudioVm(bridge, SettingsPane, toast);
 
         StartCommand = Gate(() => Accepted(_bridge.Start(), "start"));
         StopCommand = Gate(() => Accepted(_bridge.Stop(), "stop"));
@@ -83,6 +97,8 @@ public sealed class MainVm : ViewModelBase
             () => { if (_running) { StopCommand.Execute(null); } else { StartCommand.Execute(null); } },
             () => _busy.Length == 0, ShowError);
         _gated.Add(RunCommand);
+
+        CloseBannerCommand = new RelayCommand(HideBanner);
     }
 
     // ---- the tabs ---------------------------------------------------------
@@ -131,6 +147,8 @@ public sealed class MainVm : ViewModelBase
     /// <summary>The one button that is Start or Stop depending on the state.</summary>
     public RelayCommand RunCommand { get; }
 
+    public RelayCommand CloseBannerCommand { get; }
+
     private RelayCommand Gate(Action run)
     {
         var cmd = new RelayCommand(run, () => _busy.Length == 0, ShowError);
@@ -174,6 +192,8 @@ public sealed class MainVm : ViewModelBase
                 }
 
                 Engine.RaiseGates();
+                Raise(nameof(SessionTone));
+                RefreshRunBanner();
             }
         }
     }
@@ -204,6 +224,27 @@ public sealed class MainVm : ViewModelBase
 
     public string Version { get => _version; set => Set(ref _version, value); }
 
+    // ---- the session card ---------------------------------------------------
+
+    /// <summary>capturing | running, but nothing is being captured | stopped.</summary>
+    public string SessionState
+    {
+        get => _sessionState;
+        private set => Set(ref _sessionState, value);
+    }
+
+    /// <summary>backend, chunking, gate and save target, in one line.</summary>
+    public string SessionDetail
+    {
+        get => _sessionDetail;
+        private set => Set(ref _sessionDetail, value);
+    }
+
+    /// <summary>good | bad | busy | "" - the session card's dot.</summary>
+    public string SessionTone => _busy.Length > 0 && !_busy.StartsWith("engine", StringComparison.Ordinal)
+        ? "busy"
+        : _running ? (_sourceAlive ? "good" : "bad") : "";
+
     // ---- the banner --------------------------------------------------------
 
     public bool BannerOpen { get => _bannerOpen; set => Set(ref _bannerOpen, value); }
@@ -214,8 +255,12 @@ public sealed class MainVm : ViewModelBase
 
     public string BannerSeverity { get => _bannerSeverity; set => Set(ref _bannerSeverity, value); }
 
+    /// <summary>The banner's own buttons - the fix next to the complaint.</summary>
+    public ObservableCollection<ToastActionVm> BannerActions { get; } = new();
+
     public void ShowBanner(string severity, string title, string message)
     {
+        BannerActions.Clear();
         BannerSeverity = severity;
         BannerTitle = title;
         BannerMessage = message;
@@ -223,6 +268,70 @@ public sealed class MainVm : ViewModelBase
     }
 
     public void HideBanner() => BannerOpen = false;
+
+    /// <summary>
+    /// The run banner: one line above everything, because that is where the
+    /// eye already is when nothing is happening.
+    /// </summary>
+    /// <remarks>
+    /// Five states, highest priority first: a lifecycle command in flight,
+    /// nothing running, a dead capture device, no backend, and hidden. The
+    /// browser panel's renderBanner (webui/app.js:637) has the same five -
+    /// its sixth, "lost the connection", cannot happen to a panel that lives
+    /// in the engine's process. Recomputed on every state event and every
+    /// busy transition, so a one-off error banner from a failed command is
+    /// overwritten by the truth as soon as the engine speaks again.
+    /// </remarks>
+    private void RefreshRunBanner()
+    {
+        if (!_hydrated)
+        {
+            // Nothing is known yet; a red banner during startup is noise.
+            return;
+        }
+
+        if (_busy.Length > 0)
+        {
+            ShowBanner("Informational",
+                       char.ToUpperInvariant(_busy[0]) + _busy[1..] + " in progress",
+                       "This takes a few seconds - the buttons come back when "
+                       + "it finishes.");
+            return;
+        }
+
+        if (!_running)
+        {
+            ShowBanner("Warning", "Nothing is capturing or transcribing.", "");
+            BannerActions.Add(new ToastActionVm("Start",
+                () => StartCommand.Execute(null), primary: true));
+            BannerActions.Add(new ToastActionVm("Open Engine",
+                () => SelectedTab = 2));
+            return;
+        }
+
+        if (!_sourceAlive)
+        {
+            ShowBanner("Error", "The capture device is not running",
+                       _stateError);
+            BannerActions.Add(new ToastActionVm("Restart",
+                () => RestartCommand.Execute(null), primary: true));
+            BannerActions.Add(new ToastActionVm("Rescan devices",
+                () => RescanDevicesCommand.Execute(null)));
+            return;
+        }
+
+        if (!_hasBackend)
+        {
+            ShowBanner("Error", "No transcription backend", _stateError);
+            BannerActions.Add(new ToastActionVm("Reconnect",
+                () => ReconnectBackendCommand.Execute(null), primary: true));
+            BannerActions.Add(new ToastActionVm("Open Engine",
+                () => SelectedTab = 2));
+            return;
+        }
+
+        HideBanner();
+    }
 
     private void ShowError(Exception ex)
         => ShowBanner("Error", "That did not work", ex.Message);
@@ -270,14 +379,106 @@ public sealed class MainVm : ViewModelBase
         Engine.ApplyModels(hello["models"].Raw());
         Engine.Apply(hello["engine"].Raw());
 
+        _hydrated = true;
         ApplyState(hello["status"].Raw());
         ApplySettingsEcho(hello["settings"].Raw());
         Transcript.Replace(hello["history"].Raw());
         Audio.SetDevices(hello["devices"].Raw());
 
         Busy = hello["busy"].Str();
+        RefreshRunBanner();
         StatusBar.Offline = false;
         StatusBar.Start();
+    }
+
+    /// <summary>
+    /// One event off the engine's stream - the same (kind, data) pairs the
+    /// websocket carries, dispatched to whichever part of the panel owns the
+    /// kind. Unknown kinds are dropped on purpose: the engine growing a new
+    /// event must not break an older panel.
+    /// </summary>
+    /// <remarks>
+    /// Runs on the dispatcher thread - PanelHost.PostEvent marshals before
+    /// calling. The one exception is <c>meter</c>, which PanelHost hands
+    /// straight to <see cref="StatusVm.OfferMeter"/> from the caller's thread
+    /// and never routes through here; a meter frame arriving here anyway (the
+    /// soak harness does it deliberately) still lands in the right place.
+    /// </remarks>
+    public void ApplyEvent(string kind, string json)
+    {
+        switch (kind)
+        {
+            case "state":
+                ApplyState(json);
+                break;
+            case "settings":
+                ApplySettingsEcho(json);
+                break;
+            case "transcript":
+                ApplyTranscript(json);
+                break;
+            case "meter":
+                StatusBar.OfferMeter(json);
+                break;
+            case "perf":
+                StatusBar.ApplyPerf(json);
+                break;
+            case "log":
+                Doc line = Doc.Parse(json);
+                string level = line["level"].Str("info");
+                Log.Add(level, line["msg"].Str());
+                if (level == "error")
+                {
+                    // Mirrors webui/app.js:913 - an error is worth a toast
+                    // even when the log tab is not the one on screen.
+                    Toast("Error", "Error", line["msg"].Str());
+                }
+
+                break;
+            case "engine":
+                ApplyEngine(json);
+                break;
+            case "devices":
+                SettingsPane.SetDevices(json);
+                Audio.SetDevices(json);
+                break;
+            case "models":
+                SettingsPane.SetModels(json);
+                Engine.ApplyModels(json);
+                break;
+            case "presets":
+                SettingsPane.SetPresets(json);
+                break;
+            case "benchmark":
+                Benchmark.Apply(json);
+                break;
+            case "history":
+                Transcript.Replace(json);
+                break;
+            case "error":
+                Toast("Error", "Error", Doc.Parse(json)["msg"].Str());
+                break;
+            case "dropped":
+                // The duplicate filter working as intended.
+                break;
+        }
+    }
+
+    /// <summary>Apply an <c>engine</c> event - the whisper-server document.</summary>
+    public void ApplyEngine(string json)
+    {
+        Engine.Apply(json);
+        Busy = Doc.Parse(json)["busy"].Str();
+
+        // The one state in which the panel looks completely broken: capture
+        // runs, the meter moves, and no captions ever appear. Offered once.
+        if (!_serverOfferShown && _hydrated && _running
+            && !Engine.Reachable
+            && string.Equals(Engine.Backend, "server", StringComparison.Ordinal))
+        {
+            _serverOfferShown = true;
+            MaybeOfferServer();
+        }
     }
 
     /// <summary>Apply a <c>state</c> event.</summary>
@@ -291,19 +492,37 @@ public sealed class MainVm : ViewModelBase
 
         Running = st["running"].Bool();
         Paused = st["paused"].Bool();
+        _sourceAlive = st["source_alive"].Bool();
+        _hasBackend = st["backend"].Str().Length > 0;
+        _stateError = st["error"].Str();
         StatusBar.ApplyState(json);
 
-        string error = st["error"].Str();
-        if (error.Length > 0)
+        Status = DescribeStatus(st);
+        SessionState = !_running ? "stopped"
+            : _sourceAlive ? "capturing"
+            : "running, but nothing is being captured";
+
+        var parts = new List<string>
         {
-            ShowBanner("Error", "The session hit an error", error);
-        }
-        else if (_bannerSeverity == "Error")
+            "backend: " + st["backend_name"].Str("none"),
+        };
+        string strategy = st["strategy"].Str();
+        if (strategy.Length > 0)
         {
-            HideBanner();
+            parts.Add("chunking: " + strategy);
         }
 
-        Status = DescribeStatus(st);
+        parts.Add(st["gate"].Bool() ? "speech gate on" : "speech gate off");
+        string saving = st["saving"].Str();
+        if (saving.Length > 0)
+        {
+            parts.Add("writing " + saving);
+        }
+
+        SessionDetail = string.Join("   ·   ", parts);
+        Raise(nameof(SessionTone));
+
+        RefreshRunBanner();
         MaybeSuggestModel(st);
     }
 

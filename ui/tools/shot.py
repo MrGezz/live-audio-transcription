@@ -34,7 +34,7 @@ class _Stub(object):
         def pause(self, on):
             pass
 
-        def clear(self):
+        def clear_history(self):
             pass
 
         def rebuild(self, *a):
@@ -52,6 +52,7 @@ class _Stub(object):
     def __init__(self):
         self.pipeline = self._P()
         self.settings = {}
+        self.overlay = None
 
     def _lifecycle(self, name, fn):
         return name
@@ -70,6 +71,13 @@ class _Stub(object):
 
     def _engine_action(self, a, b):
         return True
+
+    def _refresh_engine(self):
+        pass
+
+    def _export_payload(self, fmt):
+        return {"filename": "shot.txt", "format": fmt, "count": 0,
+                "content": ""}
 
     def _list_models(self):
         return {}

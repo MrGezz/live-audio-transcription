@@ -31,6 +31,13 @@
     <Version>0.1.0</Version>
 
     <!--
+      No .pdb in Release: the publish output is committed (ui/runtime), and
+      a symbols file that regenerates on every build is a permanent source
+      of meaningless diffs there. Debug builds keep theirs.
+    -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+
+    <!--
       A Library does NOT get a runtimeconfig.json by default - only executables
       do - but pythonnet needs one to host the CLR, and it must name
       Microsoft.WindowsDesktop.App. clr_loader's auto-generated config filters

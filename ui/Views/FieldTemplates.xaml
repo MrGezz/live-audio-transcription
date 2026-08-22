@@ -1,0 +1,239 @@
+<!--
+    One template per field kind, plus the shared row chrome. The settings pane
+    is 60 rows and every one of them is FieldRowTemplate with a different
+    control in its ContentControl - nothing in here names a setting, because
+    the invariant this pane protects is: adding a Field(...) to settings.py
+    makes a control appear with no C# or XAML edit.
+
+    FieldTemplateSelector throws on a kind with no template here, and
+    SettingsVm.KnownKinds refuses it at startup, so an eighth kind fails
+    loudly twice rather than rendering as a TextBox that writes the wrong
+    JSON type.
+-->
+<ResourceDictionary
+    x:Class="LiveTranscription.Ui.Views.FieldTemplates"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+    xmlns:conv="clr-namespace:LiveTranscription.Ui.Converters"
+    xmlns:views="clr-namespace:LiveTranscription.Ui.Views">
+
+    <conv:BoolToVisibilityConverter x:Key="FieldBoolToVis" />
+    <conv:ColorTextConverter x:Key="FieldColorText" />
+
+    <!-- ==== the seven control templates ================================= -->
+
+    <DataTemplate x:Key="FieldBoolTemplate">
+        <ui:ToggleSwitch HorizontalAlignment="Left"
+                         IsChecked="{Binding BoolValue}" />
+    </DataTemplate>
+
+    <!--
+        Slider plus NumberBox, not one or the other: the slider answers "about
+        how much, relative to the range" and the box takes the exact value the
+        benchmark told you to type. Every numeric field in the live schema
+        declares both bounds, so the slider always has a range to draw.
+        Rounding for int fields happens in FieldVm.NumberValue, not here -
+        every numeric control WPF has is double-valued.
+    -->
+    <DataTemplate x:Key="FieldIntTemplate">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Slider VerticalAlignment="Center"
+                    Minimum="{Binding Min, TargetNullValue=0}"
+                    Maximum="{Binding Max, TargetNullValue=100}"
+                    TickFrequency="{Binding Step, TargetNullValue=1}"
+                    IsSnapToTickEnabled="True"
+                    SmallChange="{Binding Step, TargetNullValue=1}"
+                    Value="{Binding NumberValue}" />
+            <ui:NumberBox Grid.Column="1" Margin="10,0,0,0" MinWidth="96"
+                          SpinButtonPlacementMode="Hidden"
+                          ClearButtonEnabled="False"
+                          Minimum="{Binding Min, TargetNullValue=0}"
+                          Maximum="{Binding Max, TargetNullValue=100}"
+                          SmallChange="{Binding Step, TargetNullValue=1}"
+                          Value="{Binding NumberValue}" />
+        </Grid>
+    </DataTemplate>
+
+    <DataTemplate x:Key="FieldFloatTemplate">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Slider VerticalAlignment="Center"
+                    Minimum="{Binding Min, TargetNullValue=0}"
+                    Maximum="{Binding Max, TargetNullValue=1}"
+                    TickFrequency="{Binding Step, TargetNullValue=0.01}"
+                    IsSnapToTickEnabled="True"
+                    SmallChange="{Binding Step, TargetNullValue=0.01}"
+                    Value="{Binding NumberValue}" />
+            <ui:NumberBox Grid.Column="1" Margin="10,0,0,0" MinWidth="96"
+                          SpinButtonPlacementMode="Hidden"
+                          ClearButtonEnabled="False"
+                          Minimum="{Binding Min, TargetNullValue=0}"
+                          Maximum="{Binding Max, TargetNullValue=1}"
+                          SmallChange="{Binding Step, TargetNullValue=0.01}"
+                          Value="{Binding NumberValue}" />
+        </Grid>
+    </DataTemplate>
+
+    <!--
+        Text commits on focus loss, deliberately: committing per keystroke
+        would send "h", "ht", "htt"... through validation, and the debounce
+        window is tuned for sliders, not typing.
+    -->
+    <DataTemplate x:Key="FieldStrTemplate">
+        <ui:TextBox Text="{Binding TextValue}"
+                    PlaceholderText="{Binding Placeholder}" />
+    </DataTemplate>
+
+    <DataTemplate x:Key="FieldChoiceTemplate">
+        <ComboBox ItemsSource="{Binding Choices}"
+                  SelectedItem="{Binding SelectedChoice}"
+                  DisplayMemberPath="Display" />
+    </DataTemplate>
+
+    <DataTemplate x:Key="FieldPathTemplate">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <ui:TextBox Text="{Binding TextValue}"
+                        PlaceholderText="{Binding Placeholder}" />
+            <ui:Button Grid.Column="1" Margin="8,0,0,0"
+                       Content="Browse"
+                       Icon="{ui:SymbolIcon FolderOpen24}"
+                       Click="OnBrowsePath" />
+        </Grid>
+    </DataTemplate>
+
+    <!--
+        WPF ships no colour picker and WPF-UI 4.3 does not either, so the
+        picker is a swatch popup over a hex box - the same surface the web
+        panel's <input type=color> + text pair offers, minus the OS dialog.
+        Free-typed text still goes through settings._coerce, which is where
+        "#zz" actually gets refused.
+    -->
+    <DataTemplate x:Key="FieldColorTemplate">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <ToggleButton x:Name="SwatchToggle" Width="46" Height="30"
+                          Padding="0" Margin="0,0,8,0"
+                          ToolTip="Pick a colour">
+                <Border Width="34" Height="18" CornerRadius="4"
+                        BorderThickness="1"
+                        BorderBrush="{DynamicResource PanelLineBrush}"
+                        Background="{Binding TextValue, Converter={StaticResource FieldColorText}}" />
+            </ToggleButton>
+            <Popup StaysOpen="False" Placement="Bottom"
+                   PlacementTarget="{Binding ElementName=SwatchToggle}"
+                   IsOpen="{Binding IsChecked, ElementName=SwatchToggle, Mode=TwoWay}">
+                <Border Background="{DynamicResource PanelCardBrush}"
+                        BorderBrush="{DynamicResource PanelLineBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="8">
+                    <ItemsControl ItemsSource="{x:Static views:FieldTemplates.Palette}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Columns="8" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Button Width="26" Height="26" Margin="2" Padding="0"
+                                        BorderThickness="1"
+                                        BorderBrush="{DynamicResource PanelLineBrush}"
+                                        Background="{Binding Converter={StaticResource FieldColorText}}"
+                                        Tag="{Binding}"
+                                        ToolTip="{Binding}"
+                                        Click="OnSwatchPick" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Border>
+            </Popup>
+
+            <ui:TextBox Grid.Column="1"
+                        Text="{Binding TextValue}"
+                        PlaceholderText="#rrggbb" />
+        </Grid>
+    </DataTemplate>
+
+    <views:FieldTemplateSelector x:Key="FieldSelector"
+        BoolTemplate="{StaticResource FieldBoolTemplate}"
+        IntTemplate="{StaticResource FieldIntTemplate}"
+        FloatTemplate="{StaticResource FieldFloatTemplate}"
+        StrTemplate="{StaticResource FieldStrTemplate}"
+        ChoiceTemplate="{StaticResource FieldChoiceTemplate}"
+        PathTemplate="{StaticResource FieldPathTemplate}"
+        ColorTemplate="{StaticResource FieldColorTemplate}" />
+
+    <!-- ==== the shared row chrome ======================================= -->
+
+    <DataTemplate x:Key="FieldRowTemplate">
+        <StackPanel Margin="0,7,0,7"
+                    Visibility="{Binding IsShown, Converter={StaticResource FieldBoolToVis}}">
+            <Grid Margin="0,0,0,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <ui:TextBlock FontTypography="BodyStrong" TextWrapping="Wrap">
+                    <Run Text="{Binding Label, Mode=OneWay}" /><Run
+                        Text="{Binding UnitSuffix, Mode=OneWay}"
+                        Foreground="{DynamicResource PanelMutedBrush}" />
+                </ui:TextBlock>
+
+                <!--
+                    One of settings.REMOTE_LOCKED. The browser panel greys
+                    these out; here they stay editable - the rule is enforced
+                    by transport, not locality - and this chip is the only
+                    thing that explains why the same field is dead over there.
+                -->
+                <Border Grid.Column="1" Margin="8,0,0,0" Padding="6,1"
+                        CornerRadius="8" VerticalAlignment="Center"
+                        Background="{DynamicResource PanelAccentSoftBrush}"
+                        Visibility="{Binding LocalOnly, Converter={StaticResource FieldBoolToVis}}"
+                        ToolTip="Only this desktop panel can change this. The browser panel is refused, because a listener must not be reconfigurable through itself.">
+                    <TextBlock FontSize="10.5" Text="local only"
+                               Foreground="{DynamicResource PanelAccentBrush}" />
+                </Border>
+
+                <ToggleButton x:Name="HelpToggle" Grid.Column="2"
+                              Margin="8,0,0,0" Padding="7,0"
+                              FontSize="11" Content="?"
+                              ToolTip="Why this exists"
+                              Visibility="{Binding HasHelp, Converter={StaticResource FieldBoolToVis}}" />
+            </Grid>
+
+            <ContentControl Content="{Binding}"
+                            Focusable="False"
+                            IsTabStop="False"
+                            MaxWidth="560" HorizontalAlignment="Left"
+                            HorizontalContentAlignment="Stretch"
+                            ContentTemplateSelector="{StaticResource FieldSelector}" />
+
+            <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontSize="12"
+                       Foreground="{DynamicResource PanelDangerBrush}"
+                       Text="{Binding Error}"
+                       Visibility="{Binding HasError, Converter={StaticResource FieldBoolToVis}}" />
+
+            <TextBlock Margin="0,4,0,0" MaxWidth="560" HorizontalAlignment="Left"
+                       TextWrapping="Wrap" FontSize="12"
+                       Foreground="{DynamicResource PanelText2Brush}"
+                       Text="{Binding HelpLine}"
+                       Visibility="{Binding IsChecked, ElementName=HelpToggle, Converter={StaticResource FieldBoolToVis}}" />
+        </StackPanel>
+    </DataTemplate>
+</ResourceDictionary>

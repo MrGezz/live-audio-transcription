@@ -1,0 +1,89 @@
+<!--
+    The log. DataContext is LogVm. Virtualized for the same reason the
+    transcript is - 500 lines of wrapped text is real layout - and reaching
+    this tab is what clears the unread badge (MainVm.SelectedTab drives
+    LogVm.IsVisible).
+-->
+<UserControl x:Class="LiveTranscription.Ui.Views.LogTab"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             DataContextChanged="OnDataContextChanged">
+
+    <DockPanel Margin="14,10,14,0">
+
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <ui:Button Content="Copy all"
+                       Icon="{ui:SymbolIcon Copy24}"
+                       Click="OnCopy" />
+            <ui:Button Margin="8,0,0,0" Content="Clear"
+                       Icon="{ui:SymbolIcon Delete24}"
+                       Click="OnClear" />
+            <ui:ToggleSwitch Margin="16,0,0,0"
+                             Content="Follow the newest line"
+                             IsChecked="{Binding AutoScroll}" />
+        </StackPanel>
+
+        <ItemsControl x:Name="List"
+                      ItemsSource="{Binding Lines}"
+                      VirtualizingPanel.IsVirtualizing="True"
+                      VirtualizingPanel.VirtualizationMode="Recycling"
+                      ScrollViewer.CanContentScroll="True">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <VirtualizingStackPanel />
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.Template>
+                <ControlTemplate TargetType="ItemsControl">
+                    <ScrollViewer x:Name="Scroller"
+                                  CanContentScroll="True"
+                                  VerticalScrollBarVisibility="Auto">
+                        <ItemsPresenter />
+                    </ScrollViewer>
+                </ControlTemplate>
+            </ItemsControl.Template>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <Grid Margin="0,1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="52" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock FontFamily="Cascadia Mono, Consolas, monospace"
+                                   FontSize="12" Margin="0,0,10,0"
+                                   Foreground="{DynamicResource PanelMutedBrush}"
+                                   Text="{Binding Time}" />
+                        <TextBlock Grid.Column="1"
+                                   FontFamily="Cascadia Mono, Consolas, monospace"
+                                   FontSize="12"
+                                   Text="{Binding Level}">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground"
+                                            Value="{DynamicResource PanelMutedBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Level}" Value="warn">
+                                            <Setter Property="Foreground"
+                                                    Value="{DynamicResource PanelWarnBrush}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Level}" Value="error">
+                                            <Setter Property="Foreground"
+                                                    Value="{DynamicResource PanelDangerBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <TextBlock Grid.Column="2"
+                                   FontFamily="Cascadia Mono, Consolas, monospace"
+                                   FontSize="12" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource PanelText2Brush}"
+                                   Text="{Binding Message}" />
+                    </Grid>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+    </DockPanel>
+</UserControl>

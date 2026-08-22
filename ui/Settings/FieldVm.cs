@@ -296,6 +296,8 @@ public sealed class FieldVm : ViewModelBase
 
     public bool HasUnit => Unit.Length > 0;
 
+    public bool HasHelp => Help.Length > 0 || Cli.Length > 0;
+
     /// <summary>showIf is satisfied AND the advanced filter allows it.</summary>
     public bool IsVisible
     {

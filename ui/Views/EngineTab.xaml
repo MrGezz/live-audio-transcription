@@ -1,47 +1,213 @@
+<!--
+    Session, whisper-server, and the panel's own capture. DataContext is
+    MainVm; the cards bind through Engine and Audio.
+
+    The server card can say three different things about the port - answering,
+    held-but-silent, free - because "a process holds the port but does not
+    answer" is the state that actually happens, and calling it "not running"
+    sends people to press Start, which then fails because the port is taken.
+-->
 <UserControl x:Class="LiveTranscription.Ui.Views.EngineTab"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             xmlns:conv="clr-namespace:LiveTranscription.Ui.Converters">
 
-    <StackPanel Margin="16" Spacing="16">
-        <!-- Whisper-Server Card -->
-        <ui:CardControl Icon="Server24" Title="Whisper Server">
-            <ui:CardControl.Subtitle>
-                <TextBlock Text="{Binding ServerState, StringFormat='State: {0}'}" />
-            </ui:CardControl.Subtitle>
-            
-            <Grid Margin="0,12,0,0">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
+    <UserControl.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
 
-                <!-- Status Metadata (Port, PID, Image) -->
-                <StackPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="0,0,0,16">
-                    <TextBlock Text="{Binding Port, StringFormat='Port: {0}'}" Margin="0,0,16,0" Foreground="Gray"/>
-                    <TextBlock Text="{Binding Pid, StringFormat='PID: {0}'}" Margin="0,0,16,0" Foreground="Gray"/>
-                    <TextBlock Text="{Binding Image, StringFormat='Image: {0}'}" Foreground="Gray"/>
+        <Style x:Key="CardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource PanelCardBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource PanelLineBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="16,12" />
+            <Setter Property="Margin" Value="0,0,0,12" />
+        </Style>
+
+        <Style x:Key="DotStyle" TargetType="Ellipse">
+            <Setter Property="Width" Value="9" />
+            <Setter Property="Height" Value="9" />
+            <Setter Property="Margin" Value="0,0,9,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+    </UserControl.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="14,10,14,10" MaxWidth="760" HorizontalAlignment="Left">
+
+            <!-- ==== the session ======================================== -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse>
+                            <Ellipse.Style>
+                                <Style TargetType="Ellipse" BasedOn="{StaticResource DotStyle}">
+                                    <Setter Property="Fill" Value="{DynamicResource PanelMutedBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding SessionTone}" Value="good">
+                                            <Setter Property="Fill" Value="{DynamicResource PanelOkBrush}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding SessionTone}" Value="bad">
+                                            <Setter Property="Fill" Value="{DynamicResource PanelDangerBrush}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding SessionTone}" Value="busy">
+                                            <Setter Property="Fill" Value="{DynamicResource PanelWarnBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Ellipse.Style>
+                        </Ellipse>
+                        <ui:TextBlock FontTypography="BodyStrong" Text="Session" />
+                        <TextBlock Margin="12,0,0,0" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource PanelText2Brush}"
+                                   Text="{Binding SessionState}" />
+                    </StackPanel>
+
+                    <TextBlock Margin="18,6,0,0" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource PanelMutedBrush}"
+                               Text="{Binding SessionDetail}" />
+
+                    <StackPanel Orientation="Horizontal" Margin="18,10,0,0">
+                        <ui:Button Content="{Binding RunButtonText}"
+                                   Command="{Binding RunCommand}"
+                                   Appearance="Primary" />
+                        <ui:Button Margin="8,0,0,0" Content="Restart"
+                                   Icon="{ui:SymbolIcon ArrowSync24}"
+                                   Command="{Binding RestartCommand}" />
+                        <ui:Button Margin="8,0,0,0" Content="Reconnect backend"
+                                   ToolTip="Rebuild only the transcription backend - the move after the GPU server comes back up"
+                                   Command="{Binding ReconnectBackendCommand}" />
+                        <ui:Button Margin="8,0,0,0" Content="Rescan devices"
+                                   Command="{Binding RescanDevicesCommand}" />
+                    </StackPanel>
                 </StackPanel>
+            </Border>
 
-                <!-- Model Picker -->
-                <TextBlock Grid.Row="1" Grid.Column="0" Text="Model:" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <ComboBox Grid.Row="1" Grid.Column="1" 
-                          ItemsSource="{Binding AvailableModels}" 
-                          SelectedItem="{Binding SelectedModel}" 
-                          Width="200" HorizontalAlignment="Left"/>
+            <!-- ==== whisper-server ===================================== -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse>
+                            <Ellipse.Style>
+                                <Style TargetType="Ellipse" BasedOn="{StaticResource DotStyle}">
+                                    <Setter Property="Fill" Value="{DynamicResource PanelMutedBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Engine.StateTone}" Value="good">
+                                            <Setter Property="Fill" Value="{DynamicResource PanelOkBrush}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Engine.StateTone}" Value="bad">
+                                            <Setter Property="Fill" Value="{DynamicResource PanelDangerBrush}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Engine.StateTone}" Value="warn">
+                                            <Setter Property="Fill" Value="{DynamicResource PanelWarnBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Ellipse.Style>
+                        </Ellipse>
+                        <ui:TextBlock FontTypography="BodyStrong" Text="whisper-server (GPU)" />
+                        <TextBlock Margin="12,0,0,0" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource PanelText2Brush}"
+                                   Text="{Binding Engine.State}" />
+                        <Border Margin="12,0,0,0" Padding="7,1" CornerRadius="9"
+                                VerticalAlignment="Center"
+                                Background="{DynamicResource PanelAccentSoftBrush}">
+                            <TextBlock FontSize="11"
+                                       Foreground="{DynamicResource PanelAccentBrush}"
+                                       Text="{Binding Engine.Url}" />
+                        </Border>
+                    </StackPanel>
 
-                <!-- Lifecycle Controls (Start / Restart / Stop) -->
-                <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
-                    <ui:Button Command="{Binding StartCommand}" Icon="Play24" Margin="0,0,8,0" Content="Start"/>
-                    <ui:Button Command="{Binding RestartCommand}" Icon="ArrowCounterclockwise24" Margin="0,0,8,0" Content="Restart"/>
-                    <ui:Button Command="{Binding StopCommand}" Icon="Stop24" Appearance="Danger" Content="Stop"/>
+                    <TextBlock Margin="18,6,0,0" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource PanelText2Brush}"
+                               Text="{Binding Engine.Advice}" />
+
+                    <TextBlock Margin="18,4,0,0" FontSize="12"
+                               Foreground="{DynamicResource PanelMutedBrush}">
+                        <Run Text="PID " /><Run Text="{Binding Engine.PidText, Mode=OneWay}" /><Run
+                             Text="   ·   port " /><Run Text="{Binding Engine.PortText, Mode=OneWay}" /><Run
+                             Text="   ·   " /><Run Text="{Binding Engine.ImageText, Mode=OneWay}" />
+                    </TextBlock>
+
+                    <Grid Margin="18,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" MaxWidth="320" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ComboBox ItemsSource="{Binding Engine.Models}"
+                                  SelectedItem="{Binding Engine.SelectedModel}"
+                                  DisplayMemberPath="Display"
+                                  ToolTip="A .bin from _models. Only files that are actually there can be chosen." />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0,0,0">
+                            <ui:Button Content="Start"
+                                       Icon="{ui:SymbolIcon Play24}"
+                                       Command="{Binding Engine.StartCommand}" />
+                            <ui:Button Margin="8,0,0,0" Content="Restart"
+                                       Icon="{ui:SymbolIcon ArrowSync24}"
+                                       Command="{Binding Engine.RestartCommand}" />
+                            <ui:Button Margin="8,0,0,0" Content="Stop"
+                                       Icon="{ui:SymbolIcon Stop24}"
+                                       Command="{Binding Engine.StopCommand}" />
+                            <ui:Button Margin="8,0,0,0" Content="Check"
+                                       ToolTip="Ask the port again right now"
+                                       Command="{Binding Engine.RefreshCommand}" />
+                        </StackPanel>
+                    </Grid>
                 </StackPanel>
-            </Grid>
-        </ui:CardControl>
-    </StackPanel>
+            </Border>
+
+            <!-- ==== capture from this panel ============================ -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse>
+                            <Ellipse.Style>
+                                <Style TargetType="Ellipse" BasedOn="{StaticResource DotStyle}">
+                                    <Setter Property="Fill" Value="{DynamicResource PanelMutedBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Audio.IsStreaming}" Value="True">
+                                            <Setter Property="Fill" Value="{DynamicResource PanelOkBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Ellipse.Style>
+                        </Ellipse>
+                        <ui:TextBlock FontTypography="BodyStrong" Text="Capture from this panel" />
+                        <TextBlock Margin="12,0,0,0" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource PanelText2Brush}"
+                                   Text="{Binding Audio.StateText}" />
+                    </StackPanel>
+
+                    <TextBlock Margin="18,6,0,0" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource PanelMutedBrush}"
+                               Text="Pushes this machine's audio into the engine over the bridge - the same bytes the browser panel streams. Starting switches the capture mode to 'browser', the mode that listens for pushed audio." />
+
+                    <Grid Margin="18,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" MaxWidth="320" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ComboBox ItemsSource="{Binding Audio.Devices}"
+                                  SelectedItem="{Binding Audio.SelectedDevice}"
+                                  DisplayMemberPath="Display" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0,0,0">
+                            <ui:Button Content="{Binding Audio.MicButtonText}"
+                                       Icon="{ui:SymbolIcon Mic24}"
+                                       Command="{Binding Audio.MicCommand}" />
+                            <ui:Button Margin="8,0,0,0"
+                                       Content="{Binding Audio.LoopButtonText}"
+                                       Icon="{ui:SymbolIcon Speaker224}"
+                                       ToolTip="Capture whatever the default output device is playing (WASAPI loopback)"
+                                       Command="{Binding Audio.LoopbackCommand}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBlock Margin="18,6,0,0" FontSize="12"
+                               Foreground="{DynamicResource PanelMutedBrush}"
+                               Text="{Binding Audio.StatsText}" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
 </UserControl>

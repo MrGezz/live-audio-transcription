@@ -60,6 +60,7 @@ public sealed class SettingsVm : ViewModelBase
     private readonly DispatcherTimer _debounce;
 
     private IReadOnlyList<ChoiceVm> _languages = Array.Empty<ChoiceVm>();
+    private readonly Dictionary<string, JsonElement> _defaults = new(StringComparer.Ordinal);
     private Doc _devices = Doc.None;
     private Doc _models = Doc.None;
     private bool _showAdvanced;
@@ -133,6 +134,23 @@ public sealed class SettingsVm : ViewModelBase
     /// </exception>
     public void LoadSchema(string schemaJson)
     {
+        // The promise ConditionEvaluator's remarks make: Match is asserted at
+        // startup rather than left to be noticed as twelve fields that never
+        // appear. It exercises exactly the comparison that the obvious
+        // ToString() implementation gets wrong.
+        JsonElement jTrue = JsonSerializer.SerializeToElement(true);
+        JsonElement jFile = JsonSerializer.SerializeToElement("file");
+        if (!ConditionEvaluator.Match(jTrue, JsonSerializer.SerializeToElement(true))
+            || ConditionEvaluator.Match(jTrue, JsonSerializer.SerializeToElement(false))
+            || !ConditionEvaluator.Match(jFile, JsonSerializer.SerializeToElement("file"))
+            || !ConditionEvaluator.Match(JsonSerializer.SerializeToElement(1),
+                                         JsonSerializer.SerializeToElement(1.0)))
+        {
+            throw new InvalidOperationException(
+                "ConditionEvaluator.Match no longer compares JSON values by "
+                + "kind - every boolean-gated showIf would evaluate hidden.");
+        }
+
         Doc schema = Doc.Parse(schemaJson);
         if (!schema.Exists)
         {
@@ -154,6 +172,12 @@ public sealed class SettingsVm : ViewModelBase
         }
 
         _languages = languages;
+
+        _defaults.Clear();
+        foreach (KeyValuePair<string, Doc> kv in schema["defaults"].Fields())
+        {
+            _defaults[kv.Key] = kv.Value.Element;
+        }
 
         var fields = new List<FieldVm>();
         var unknown = new List<string>();
@@ -570,6 +594,20 @@ public sealed class SettingsVm : ViewModelBase
         }
 
         Flush();
+    }
+
+    /// <summary>
+    /// Every setting back to its schema default, as one patch - the "Reset
+    /// all" button. One patch for the same reason the benchmark sends one:
+    /// defaults are only guaranteed valid TOGETHER, against the cross-field
+    /// rules.
+    /// </summary>
+    public void ResetToDefaults()
+    {
+        if (_defaults.Count > 0)
+        {
+            ApplyPatch(_defaults);
+        }
     }
 
     // ---- presets -------------------------------------------------------------
