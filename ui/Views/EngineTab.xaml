@@ -20,7 +20,7 @@
             <Setter Property="Background" Value="{DynamicResource PanelCardBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource PanelLineBrush}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="CornerRadius" Value="12" />
             <Setter Property="Padding" Value="16,12" />
             <Setter Property="Margin" Value="0,0,0,12" />
         </Style>
@@ -112,6 +112,8 @@
                                    Text="{Binding Engine.State}" />
                         <Border Margin="12,0,0,0" Padding="7,1" CornerRadius="9"
                                 VerticalAlignment="Center"
+                                BorderThickness="1"
+                                BorderBrush="{DynamicResource PanelAccentLineBrush}"
                                 Background="{DynamicResource PanelAccentSoftBrush}">
                             <TextBlock FontSize="11"
                                        Foreground="{DynamicResource PanelAccentBrush}"

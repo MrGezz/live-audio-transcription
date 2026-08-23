@@ -1,4 +1,5 @@
 using System;
+using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -21,6 +22,9 @@ public sealed class PanelHost
     private Application? _app;
     private MainWindow? _window;
     private MainVm? _vm;
+    private ResourceDictionary? _charcoal;
+    private ResourceDictionary? _panel;
+    private string _accent = "";
 
     /// <summary>Set once the window exists and is safe to talk to.</summary>
     public bool IsReady { get; private set; }
@@ -53,39 +57,13 @@ public sealed class PanelHost
         // ApplicationDefinition, and doing it here keeps the merge ORDER
         // explicit - which matters, because the charcoal override only wins if
         // it is merged after WPF-UI's own dictionaries.
-        var themes = new ThemesDictionary
+        _app.Resources.MergedDictionaries.Add(new ThemesDictionary
         {
             Theme = dark ? ApplicationTheme.Dark : ApplicationTheme.Light,
-        };
-        _app.Resources.MergedDictionaries.Add(themes);
+        });
         _app.Resources.MergedDictionaries.Add(new ControlsDictionary());
-        _app.Resources.MergedDictionaries.Add(new ResourceDictionary
-        {
-            Source = new Uri(
-                dark
-                    ? "/LiveTranscription.Ui;component/Themes/Charcoal.xaml"
-                    : "/LiveTranscription.Ui;component/Themes/CharcoalLight.xaml",
-                UriKind.Relative),
-        });
-
-        // The panel's own semantic keys - confidence bands, pill tones -
-        // which exist in no WPF-UI dictionary. Hand-written, not generated;
-        // merged last so nothing can shadow them.
-        _app.Resources.MergedDictionaries.Add(new ResourceDictionary
-        {
-            Source = new Uri(
-                dark
-                    ? "/LiveTranscription.Ui;component/Themes/Panel.xaml"
-                    : "/LiveTranscription.Ui;component/Themes/PanelLight.xaml",
-                UriKind.Relative),
-        });
-
-        ApplicationThemeManager.Apply(
-            dark ? ApplicationTheme.Dark : ApplicationTheme.Light,
-            WindowBackdropType.Mica,
-            updateAccent: false);
-
-        ApplyAccent(accent, dark);
+        _accent = accent;
+        ApplyTheme(dark);
 
         _vm = new MainVm(bridge, Dispatcher.CurrentDispatcher);
         _window = new MainWindow { DataContext = _vm };
@@ -116,10 +94,79 @@ public sealed class PanelHost
         IsReady = false;
     }
 
+    /// <summary>
+    /// Put the dark or light pair in place: WPF-UI's own theme, then the
+    /// generated Charcoal/CharcoalLight restatement of its brushes, then the
+    /// hand-written Panel/PanelLight keys, then the accent tiers. Called once
+    /// from <see cref="Start"/> and again, on the dispatcher, for every
+    /// <see cref="PostTheme"/>: the views reach every brush through
+    /// DynamicResource, so replacing the merged dictionaries restyles the
+    /// open window in place. Nothing here knows WHY the theme changed - the
+    /// setting that drives it is app.py's business (invariant 13).
+    /// </summary>
+    private void ApplyTheme(bool dark)
+    {
+        if (_app is null)
+        {
+            return;
+        }
+
+        // WPF-UI's own dictionary first, so ours still win the merge order
+        // below. On a live switch its manager also re-applies the backdrop
+        // and flips the title bar between its dark and light chrome.
+        ApplicationThemeManager.Apply(
+            dark ? ApplicationTheme.Dark : ApplicationTheme.Light,
+            WindowBackdropType.Mica,
+            updateAccent: false);
+
+        Collection<ResourceDictionary> merged = _app.Resources.MergedDictionaries;
+        Replace(merged, ref _charcoal, dark ? "Charcoal" : "CharcoalLight");
+        // The panel's own semantic keys - confidence bands, pill tones -
+        // which exist in no WPF-UI dictionary. Hand-written, not generated;
+        // merged last so nothing can shadow them.
+        Replace(merged, ref _panel, dark ? "Panel" : "PanelLight");
+
+        // MainWindow.xaml binds its Background to ApplicationBackgroundBrush
+        // on purpose (opaque, or the window is white wherever DWM is off).
+        // The backdrop manager may have written a local value over that
+        // binding just now; put the reference back so the brush follows the
+        // theme it was just given.
+        _window?.SetResourceReference(Window.BackgroundProperty, "ApplicationBackgroundBrush");
+
+        ApplyAccent(_accent, dark);
+    }
+
+    /// <summary>
+    /// Swap one of our dictionaries for its other-theme twin at the SAME
+    /// position, or append it the first time. Assigning into
+    /// MergedDictionaries is what makes WPF re-resolve every DynamicResource
+    /// that pointed into the old one.
+    /// </summary>
+    private static void Replace(Collection<ResourceDictionary> merged,
+                                ref ResourceDictionary? current, string name)
+    {
+        var fresh = new ResourceDictionary
+        {
+            Source = new Uri("/LiveTranscription.Ui;component/Themes/" + name + ".xaml",
+                             UriKind.Relative),
+        };
+        int at = current is null ? -1 : merged.IndexOf(current);
+        if (at < 0)
+        {
+            merged.Add(fresh);
+        }
+        else
+        {
+            merged[at] = fresh;
+        }
+
+        current = fresh;
+    }
+
     private void ApplyAccent(string accent, bool dark)
     {
         // The panel's own dictionary (Panel.xaml / PanelLight.xaml, merged
-        // just above) is the source of truth: it is where the webui's
+        // by ApplyTheme) is the source of truth: it is where the webui's
         // --accent and --accent-2 are transcribed PER THEME, so the light
         // theme gets #0097A7 rather than the dark #00BCD4 that used to be
         // passed in regardless. Handing them to the accent manager verbatim
@@ -228,6 +275,12 @@ public sealed class PanelHost
         => Post(() => _vm?.ShowBanner(severity, title, message));
 
     public void PostBannerHidden() => Post(() => _vm?.HideBanner());
+
+    /// <summary>
+    /// Re-theme the open window in place - dark or light. The setting behind
+    /// it lives in app.py; this only ever hears the answer.
+    /// </summary>
+    public void PostTheme(bool dark) => Post(() => ApplyTheme(dark));
 
     /// <summary>Close the window and end <see cref="Start"/>.</summary>
     public void Shutdown()

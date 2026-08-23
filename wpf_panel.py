@@ -431,6 +431,19 @@ class Panel(object):
         if self._host is not None:
             self._host.PostBannerHidden()
 
+    def theme(self, dark):
+        """Re-theme the open window in place: True for dark, False for light.
+
+        app.py's _sync_panel_theme calls this when wpf_theme changes. The
+        swap - WPF-UI's own theme dictionary, then Charcoal/CharcoalLight
+        and Panel/PanelLight, then the accent tiers - runs on the dispatcher
+        (PanelHost.ApplyTheme). The views reach every brush through
+        DynamicResource, so the window restyles without being rebuilt.
+        """
+        self._dark = bool(dark)
+        if self._host is not None:
+            self._host.PostTheme(bool(dark))
+
     def request_close(self):
         """Ask the window to close, without waiting for it.
 

@@ -23,4 +23,37 @@
     <SolidColorBrush x:Key="PanelLineBrush" Color="#FFCFD8DC" />
     <SolidColorBrush x:Key="PanelCardBrush" Color="#FFFFFFFF" />
     <SolidColorBrush x:Key="PanelTrackBrush" Color="#FFECEFF1" />
+
+    <!-- WPF-UI's default is 4; the web panel's inputs and buttons use the
+         CSS radius-sm token, 8px. Every control style reaches this key
+         through DynamicResource, so one override here is the whole change.
+         Cards are the radius token, 12, set where each card is declared. -->
+    <CornerRadius x:Key="ControlCornerRadius">8</CornerRadius>
+
+    <!-- .pill chrome: the panel colour at 60 % for the fill, and a border
+         that takes the tone's hue at 45 % (danger 50 %) instead of the line
+         colour. A transcript
+         line's tag shares the hue brushes for its edge where the CSS says
+         35 % - one key per hue, ten points of alpha, on purpose. -->
+    <SolidColorBrush x:Key="PanelPillFillBrush" Color="#99FFFFFF" />
+    <SolidColorBrush x:Key="PanelOkLineBrush" Color="#732E7D32" />
+    <SolidColorBrush x:Key="PanelWarnLineBrush" Color="#73F57F17" />
+    <SolidColorBrush x:Key="PanelDangerLineBrush" Color="#80D32F2F" />
+    <SolidColorBrush x:Key="PanelVioletLineBrush" Color="#73651FFF" />
+    <!-- the accent at 20 %: the edge of an accent-soft chip (.eyebrow) -->
+    <SolidColorBrush x:Key="PanelAccentLineBrush" Color="#330097A7" />
+    <!-- the hue at 14 %: a transcript tag's tint (.tag.server, .tag.local) -->
+    <SolidColorBrush x:Key="PanelVioletSoftBrush" Color="#24651FFF" />
+    <SolidColorBrush x:Key="PanelWarnSoftBrush" Color="#24F57F17" />
+
+    <!-- meter fills, .bar i and .bar i.vad: the gradient runs across the
+         fill's own width, as the CSS paints it, not across the track -->
+    <LinearGradientBrush x:Key="PanelLevelFillBrush" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Offset="0" Color="#FF2E7D32" />
+        <GradientStop Offset="1" Color="#FFF57F17" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="PanelVadFillBrush" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Offset="0" Color="#FF0097A7" />
+        <GradientStop Offset="1" Color="#FF651FFF" />
+    </LinearGradientBrush>
 </ResourceDictionary>

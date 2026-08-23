@@ -2,10 +2,10 @@
 
 Status of the `ui/` front end. Branch `feature/ui-wpf`.
 
-**Everything the plan listed is shipped** — the nine steps below, the last
-two from the first day on real hardware (2026-08-23). What is still to do is
-short, and it sits here at the top under its own heading so it cannot be
-mistaken for the record. The record stays because half of this file was
+**Everything the plan listed is shipped** — the ten steps below, the last
+three from the first day on real hardware (2026-08-23). What is still to do
+sits here at the top under its own heading so it cannot be mistaken for the
+record. The record stays because half of this file was
 never a to-do list: the decisions and the measurements that settled the
 arguments are written down so none of it has to be re-derived.
 
@@ -13,50 +13,10 @@ arguments are written down so none of it has to be re-derived.
 
 ## Remaining work
 
-Four items. None is a defect, and only the first is work rather than a
-decision. What was deliberately *not* done is under "Settled" at the end,
-with the reasons, so it does not get re-proposed.
-
-1. **A test that asserts what the panel did.** `tests/` covers the gate,
-   the strategies and the settings plumbing (47 tests, `python -m unittest
-   discover -s tests -t . -v`); `shot.py` renders and `soak.py` measures,
-   and neither checks what a view-model *did*. The preset-ack bug in step 9
-   — every preset call toasted "Preset loaded" — was invisible to both
-   shipped tools. The harness is assembled from parts that already exist:
-   `soak._SoakApp` with the real `App` handlers bound onto it
-   (`app.PRESET_DIR` and `app.BUILTIN_PRESET_DIR` repointed at a scratch
-   directory first), `Panel(app)` + `hello(shot._hello(app))`, then
-   `Application.Current.Dispatcher.BeginInvoke(DispatcherPriority.Background,
-   …)` to read `MainVm.SettingsPane` and `MainVm.StatusBar.Toasts` — via
-   `FieldVm.Value`, not `TextValue`, which is `""` for anything that is not
-   a JSON string. It skips without pythonnet and the Desktop runtime, as
-   `test_real_model.py` skips without the model, and it runs against the
-   published `ui/runtime` — the artifact that ships — so after
-   `.\build_ui.cmd`. Done when a test fails if `PresetAck` goes back to
-   toasting success on an `error` ack.
-2. **A theme switch, or a decision not to have one.**
-   `wpf_panel.Panel(dark=False)` renders the light pair and it holds up
-   (step 8); nothing exposes it — no field, no toggle, and `app.py`
-   constructs the panel with the default, dark. The web panel has a switch.
-   If the desktop panel gets one it is a `Field` in `settings.py` (invariant
-   13: it must appear in both panels with no UI edit) read by
-   `Panel.__init__`, plus a rebuild. If not, say so here and stop carrying
-   the light pair as a question.
-3. **Theme fidelity beyond colour.** An audit against the house
-   theme-patching guideline (single-agent, unverified — its verification
-   pass never ran) lists: WPF-UI's `ControlCornerRadius` 4 where the web
-   panel uses 8 for inputs and 12 for cards; tone chips and pills carry only
-   the ink, not the web rules' tinted fill and border; the meter is a flat
-   fill where the web bar is an ok→warn gradient; the scrollbar thumb is a
-   neutral overlay where `--sb-thumb` is an accent mix; the backend tag is a
-   radius-9 pill where the web and the guideline say 6. None is a defect;
-   each is a deviation to decide on, not to drift into. Done when each has
-   either been matched or been recorded here as deliberate.
-4. **Light `--bg-2`.** `theme-patching-guideline.md:233` says `#E7EDF0`;
-   the website and `webui/style.css` both say `#FFFFFF`. The panel follows
-   the CSS (`gen_theme.py` says so at the pin). One of the two is wrong,
-   probably the guideline's table: correct it there, or reverse the pin
-   here — but not neither.
+Nothing is open. The four items this section carried on 2026-08-23 were
+closed the same day — three done, one decided — and step 10 records how.
+Anything new goes here first, with what "done" looks like, before it goes
+anywhere else in this file.
 
 ---
 
@@ -423,8 +383,8 @@ Four things had to be true, and three of them were not:
   (`error` for the whole call; `errors` per field, with the rest applied),
   joins them into one toast, tests success positively on the key naming
   what was done, and shows the name `_safe_preset_name` actually used.
-  Neither shipped tool could see this bug — which is what item 1 of the
-  remaining work is for.
+  Neither shipped tool could see this bug; `tests/test_panel.py` (step 10)
+  does.
 - **The browser's preset placeholder had no value.** `renderPresets` rebuilt
   it with a helper that sets `textContent` only, so its value became its own
   label and picking it would have asked the engine for a preset called
@@ -446,6 +406,57 @@ logged, rebuilt the gate — and neither reached `SpeechGate.create()` or
 `configure()`; the gate ran `min_silence_ms` 160 while both panels showed
 400. That is Python-side work and is recorded where it belongs: CONTRIBUTING
 invariants 10 and 15, the `speech_gate.py` docstring, and `tests/`.
+
+### 10. The remaining-work list, closed (2026-08-23)
+
+**A test that asserts what the panel did.** `tests/test_panel.py`, seven
+cases. It opens the real window from the published `ui/runtime`, binds
+app.py's own handlers — `_preset_save/_load/_delete`, `_on_event`,
+`_sync_panel_theme` — onto soak.py's engine stand-in so production Python
+sits under the real `SettingsVm`, and reads the toasts and the theme back
+off the dispatcher. Loading a built-in toasts Success with its name and
+leaves the dropdown populated; a missing name is one Error toast; a file
+the validator refuses is one Error toast and no Success; deleting a
+built-in is refused while deleting a saved copy over it restores the
+original; an ack without a `presets` array leaves the list alone. Skips
+without pythonnet or the Desktop Runtime, as `test_real_model.py` skips
+without the model: `.venv\Scripts\python.exe -m unittest tests.test_panel
+-v`, the window on screen for about a second. The suite is 54 tests with
+everything present.
+
+**The theme is a setting, applied live.** `wpf_theme` (`dark` | `light`,
+`--wpf-theme`) in the *Control panels* group, REMOTE_LOCKED like `wpf` and
+for the same reason — what the host's window looks like belongs to whoever
+is sitting at it. A `Field` rather than a button in the window, so it
+persists with the rest and appears in both panels with no UI edit
+(invariant 13); and the same invariant decides WHERE it is applied:
+`app.py`'s `_sync_panel_theme`, beside `_sync_overlay`, tells the panel
+"dark" or "light" through `Panel.theme()` — C# never sees the key.
+`PanelHost.ApplyTheme` then swaps WPF-UI's theme, the Charcoal pair and the
+Panel pair in place and re-runs the accent tiers; the views reach every
+brush by DynamicResource, so the open window restyles without being
+rebuilt. One trap, below: the backdrop manager writes a local Background
+over MainWindow's resource reference on a live switch.
+
+**Theme fidelity beyond colour.** Each of the five audited deviations is
+now matched to `webui/style.css`, or recorded as deliberate.
+`ControlCornerRadius` is 8 (`--radius-sm`; one key in Panel.xaml, which
+every WPF-UI control style reads dynamically) and cards, the banner and the
+toasts are 12 (`--radius`). Pills carry `.pill`'s fill (the panel colour at
+60 %) and a border in the tone's hue (45 %, danger 50 %) instead of ink
+alone. The level meter is the `--ok` → `--warn` gradient and the speech
+meter `--accent` → `--violet`, across the fill as the CSS paints it. The
+scrollbar thumb is `--sb-thumb` — the accent at 40 % over `--panel-2` dark,
+45 % over `--line` light — pinned in `gen_theme.py`. The transcript tag is
+radius 6 with the 1 px edge and the backend's tint. Deliberate: a tag's edge
+uses the pill alpha (45 %) where the CSS says 35 %, one key per hue; and
+the thumb's hover keeps WPF-UI's opacity step rather than going to full
+accent. Rendered in both themes with `shot.py`, every tab.
+
+**Light `--bg-2`: settled, not fixed here.** The panel follows the website
+and `webui/style.css` (`#FFFFFF`); the guideline's table (`#E7EDF0`) is a
+document outside this repository and is its own to correct. `gen_theme.py`
+says at the pin which one it mirrors and why.
 
 ---
 
@@ -606,6 +617,14 @@ packages from `deps.json` and swaps a `runtimeconfig` property; the committed
 (`latestFeature`); a `ui/runtime` diff that touches anything besides
 `LiveTranscription.Ui.dll` means the pin was bypassed.
 
+**A live theme switch loses the window's Background binding.**
+`ApplicationThemeManager.Apply` re-applies the backdrop to the open window,
+and on the way writes a local Background over MainWindow's
+`{DynamicResource ApplicationBackgroundBrush}` — the opaque brush that keeps
+the window from rendering white wherever DWM is off. `PanelHost.ApplyTheme`
+calls `SetResourceReference(BackgroundProperty, ...)` after it; the panel
+test asserts the window is opaque `#ECEFF1` after a switch, not transparent.
+
 ---
 
 ## Settled
@@ -634,6 +653,10 @@ reasoning is not re-derived; nothing here is pending anything.
 - **`global.json` is in.** `9a05aa0`, `8.0.100` with `rollForward:
   latestFeature`; verified with 8.0.424 resolved (step 8). Invariant 11 says
   what a bypassed pin looks like.
-- **The light theme renders.** Every tab, via `Panel(dark=False)`, coherent
-  once its pins mirrored the dark ones key for key (step 8). Whether to
-  expose it is item 2 of the remaining work.
+- **The light theme renders, and is exposed.** Every tab, via
+  `Panel(dark=False)`, coherent once its pins mirrored the dark ones key for
+  key (step 8); `wpf_theme` switches the open window to it (step 10).
+- **Light `--bg-2` follows the CSS.** `#FFFFFF`, as the website and
+  `webui/style.css` say; the guideline's table (`#E7EDF0`) is a document
+  outside this repository and is its own to correct. `gen_theme.py` says at
+  the pin which one it mirrors.

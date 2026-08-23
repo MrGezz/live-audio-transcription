@@ -119,7 +119,7 @@
                         Message="Tones decode to almost no text, so this measures the encoder and little else. Point it at a WAV of real speech for numbers you can act on."
                         IsOpen="{Binding Synthetic, Mode=OneWay}" />
 
-            <Border Margin="0,8,0,0" Padding="14,10" CornerRadius="10"
+            <Border Margin="0,8,0,0" Padding="14,10" CornerRadius="12"
                     Background="{DynamicResource PanelCardBrush}"
                     BorderBrush="{DynamicResource PanelLineBrush}"
                     BorderThickness="1"

@@ -176,9 +176,16 @@ The difference is *how it talks to the engine*. The browser panel is a remote
 control: it needs a listener, a port and a token, and its buttons are command
 names on a wire. The desktop panel lives in the engine's process and calls it
 directly — a click reaches `App._lifecycle` as a compiled method call, with no
-socket anywhere. That also means the five `web_*` settings the browser is
-refused (a listener must not be reconfigurable through itself) stay editable
-here, where that rule was never about you.
+socket anywhere. That also means the `web_*` settings the browser is refused
+(a listener must not be reconfigurable through itself) stay editable here,
+where that rule was never about you — and so do the panel's own two, `wpf`
+and `wpf_theme`.
+
+The window is dark by default; `--wpf-theme light` (or the *Desktop panel
+theme* row under *Control panels*) switches it, live — the open window
+re-themes in place. It is a setting rather than a button so that it persists
+with the rest and rides along in presets; the browser panel keeps its own
+switch in its top bar.
 
 What it needs, and what happens without it:
 

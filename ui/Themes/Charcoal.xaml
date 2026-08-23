@@ -226,7 +226,7 @@
     <SolidColorBrush x:Key="RadioButtonOuterEllipseStrokePressed" Color="#28FFFFFF" />
     <SolidColorBrush x:Key="ScrollBarButtonArrowForeground" Color="#8BFFFFFF" />
     <SolidColorBrush x:Key="ScrollBarButtonBackground" Color="#00FFFFFF" />
-    <SolidColorBrush x:Key="ScrollBarThumbFill" Color="#8BFFFFFF" />
+    <SolidColorBrush x:Key="ScrollBarThumbFill" Color="#FF116573" />
     <SolidColorBrush x:Key="ScrollBarTrackFillPointerOver" Color="#FF1F2F37" />
     <SolidColorBrush x:Key="SeparatorBorderBrush" Color="#15FFFFFF" />
     <SolidColorBrush x:Key="SliderOuterThumbBackground" Color="#FF344953" />

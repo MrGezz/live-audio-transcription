@@ -203,6 +203,8 @@
                 -->
                 <Border Grid.Column="1" Margin="8,0,0,0" Padding="6,1"
                         CornerRadius="8" VerticalAlignment="Center"
+                        BorderThickness="1"
+                        BorderBrush="{DynamicResource PanelAccentLineBrush}"
                         Background="{DynamicResource PanelAccentSoftBrush}"
                         Visibility="{Binding LocalOnly, Converter={StaticResource FieldBoolToVis}}"
                         ToolTip="Only this desktop panel can change this. The browser panel is refused, because a listener must not be reconfigurable through itself.">

@@ -58,8 +58,32 @@
         <DataTemplate x:Key="PillTemplate">
             <Border Margin="6,0,0,0" Padding="9,2" CornerRadius="11"
                     BorderThickness="1"
-                    BorderBrush="{DynamicResource PanelLineBrush}"
+                    Background="{DynamicResource PanelPillFillBrush}"
                     ToolTip="{Binding Tip}">
+                <!-- .pill: the border takes the tone's hue too, not only
+                     the value's ink - a bad pill is outlined in red -->
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="BorderBrush" Value="{DynamicResource PanelLineBrush}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Tone}" Value="good">
+                                <Setter Property="BorderBrush" Value="{DynamicResource PanelOkLineBrush}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Tone}" Value="bad">
+                                <Setter Property="BorderBrush" Value="{DynamicResource PanelDangerLineBrush}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Tone}" Value="warn">
+                                <Setter Property="BorderBrush" Value="{DynamicResource PanelWarnLineBrush}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Tone}" Value="gpu">
+                                <Setter Property="BorderBrush" Value="{DynamicResource PanelVioletLineBrush}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Tone}" Value="cpu">
+                                <Setter Property="BorderBrush" Value="{DynamicResource PanelWarnLineBrush}" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
                 <StackPanel Orientation="Horizontal">
                     <TextBlock FontSize="10.5" VerticalAlignment="Center"
                                Foreground="{DynamicResource PanelMutedBrush}"
@@ -196,7 +220,7 @@
             which. Hand-rolled so its actions sit inside it - the fix next to
             the complaint.
         -->
-        <Border Grid.Row="2" Margin="18,0,18,8" CornerRadius="8"
+        <Border Grid.Row="2" Margin="18,0,18,8" CornerRadius="12"
                 Background="{DynamicResource PanelCardBrush}"
                 BorderThickness="1"
                 Visibility="{Binding BannerOpen, Converter={StaticResource BoolToVis}}">
@@ -309,8 +333,9 @@
                                 <ColumnDefinition Width="{Binding StatusBar.Level, Converter={StaticResource Star}}" />
                                 <ColumnDefinition Width="{Binding StatusBar.Level, Converter={StaticResource Star}, ConverterParameter=rest}" />
                             </Grid.ColumnDefinitions>
+                            <!-- .bar i: ok to warn across the fill -->
                             <Rectangle RadiusX="4" RadiusY="4"
-                                       Fill="{DynamicResource PanelAccentBrush}" />
+                                       Fill="{DynamicResource PanelLevelFillBrush}" />
                         </Grid>
                         <!-- where the silence threshold sits, on the same curve -->
                         <Grid>
@@ -336,8 +361,9 @@
                                 <ColumnDefinition Width="{Binding StatusBar.VadFill, Converter={StaticResource Star}}" />
                                 <ColumnDefinition Width="{Binding StatusBar.VadFill, Converter={StaticResource Star}, ConverterParameter=rest}" />
                             </Grid.ColumnDefinitions>
+                            <!-- .bar i.vad: accent to violet -->
                             <Rectangle RadiusX="4" RadiusY="4"
-                                       Fill="{DynamicResource PanelOkBrush}" />
+                                       Fill="{DynamicResource PanelVadFillBrush}" />
                         </Grid>
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -439,7 +465,7 @@
                       ItemsSource="{Binding StatusBar.Toasts}">
             <ItemsControl.ItemTemplate>
                 <DataTemplate>
-                    <Border Margin="0,0,0,8" Padding="12,9" CornerRadius="8"
+                    <Border Margin="0,0,0,8" Padding="12,9" CornerRadius="12"
                             Background="{DynamicResource PanelCardBrush}"
                             BorderThickness="1,1,1,1"
                             MouseEnter="Toast_MouseEnter">

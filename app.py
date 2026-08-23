@@ -87,6 +87,7 @@ class App(object):
         self._engine_poll_started = False
         self._stop = threading.Event()
         self._last_overlay_style = None
+        self._last_panel_theme = None
         # Enumerating capture devices costs 585 ms the first time on this
         # machine (PortAudio walks every host API), and the websocket
         # callbacks run ON the event-loop thread - so doing it inside
@@ -329,12 +330,38 @@ class App(object):
             return
         self.overlay.configure(self.settings)
 
+    def _panel_dark(self):
+        return self.settings.get("wpf_theme", "dark") != "light"
+
+    def _sync_panel_theme(self):
+        """
+        Re-theme the desktop panel when wpf_theme changes. Any thread.
+
+        The panel's _sync_overlay, and the reason the theme is applied from
+        HERE rather than read by the panel: C# must not know a settings key
+        by name (CONTRIBUTING invariant 13 - the pane is generated, and
+        `model` is the one sanctioned exception), so the window is told
+        "dark" or "light" and nothing else. Asynchronous, through
+        PanelHost.PostTheme, like every other push: this runs on whichever
+        thread emitted the settings event - the dispatcher itself when the
+        edit came from the panel - and a blocking call back into the window
+        from there is the one deadlock the bridge rules exist to prevent.
+        """
+        theme = self.settings.get("wpf_theme", "dark")
+        if theme == self._last_panel_theme:
+            return
+        self._last_panel_theme = theme
+        panel = self.panel
+        if panel is not None and panel.alive:
+            panel.theme(theme != "light")
+
     # -- events -----------------------------------------------------------
     def _on_event(self, kind, data):
         self._notify(kind, data)
         if kind == "settings":
             self.settings.update(data)
             self._sync_overlay()
+            self._sync_panel_theme()
         if kind == "transcript":
             if self.overlay is not None:
                 self.overlay.show(data["text"])
@@ -419,7 +446,7 @@ class App(object):
         if not self._engine:
             self._engine = self._engine_status()
         try:
-            panel = wpf_panel.Panel(self)
+            panel = wpf_panel.Panel(self, dark=self._panel_dark())
             panel.start()
         except wpf_panel.PanelUnavailable as e:
             print("[wpf] {0}".format(e))
@@ -430,6 +457,9 @@ class App(object):
                   "transcription carries on.".format(type(e).__name__, e))
             return
         self.panel = panel
+        # The window opened in this theme; _sync_panel_theme moves it from
+        # here when the setting changes.
+        self._last_panel_theme = self.settings.get("wpf_theme", "dark")
         panel.hello(self._hello_payload())
         print("Desktop panel: open.")
 

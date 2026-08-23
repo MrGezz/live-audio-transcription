@@ -99,10 +99,36 @@
                                      Foreground="{DynamicResource PanelText2Brush}" />
                             </TextBlock>
 
+                            <!-- .line .tag: radius 6 with a 1px edge, and the
+                                 tint follows the backend the way the ink
+                                 below does - violet for the server, amber
+                                 for local -->
                             <Border Grid.Column="1" Margin="0,1,10,0" Padding="7,1"
-                                    CornerRadius="9" VerticalAlignment="Top"
-                                    Background="{DynamicResource PanelAccentSoftBrush}"
+                                    CornerRadius="6" VerticalAlignment="Top"
+                                    BorderThickness="1"
                                     ToolTip="{Binding Backend}">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Background"
+                                                Value="{DynamicResource PanelAccentSoftBrush}" />
+                                        <Setter Property="BorderBrush"
+                                                Value="{DynamicResource PanelAccentLineBrush}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Backend}" Value="server">
+                                                <Setter Property="Background"
+                                                        Value="{DynamicResource PanelVioletSoftBrush}" />
+                                                <Setter Property="BorderBrush"
+                                                        Value="{DynamicResource PanelVioletLineBrush}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Backend}" Value="local">
+                                                <Setter Property="Background"
+                                                        Value="{DynamicResource PanelWarnSoftBrush}" />
+                                                <Setter Property="BorderBrush"
+                                                        Value="{DynamicResource PanelWarnLineBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
                                 <TextBlock FontSize="10.5" Text="{Binding Tag}">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">

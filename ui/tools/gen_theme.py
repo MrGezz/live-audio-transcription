@@ -84,6 +84,10 @@ DARK = {
         "TextFillColorDisabledBrush": "#FF3C5461",
         "TextControlBackgroundBrush": "#FF0F161A",
         "TextControlBackgroundFocusedBrush": "#FF0B1013",
+        # --sb-thumb: the accent at 40 % over --panel-2 (color-mix in sRGB),
+        # where WPF-UI's thumb is a neutral white overlay. Hover stays the
+        # template's own opacity step; the CSS goes to full accent there.
+        "ScrollBarThumbFill": "#FF116573",
         "SystemFillColorSuccessBrush": "#FF4CAF50",
         "SystemFillColorCautionBrush": "#FFFFB300",
         "SystemFillColorCriticalBrush": "#FFFF5252",
@@ -168,6 +172,7 @@ LIGHT = {
         "TextFillColorDisabledBrush": "#FFAFBFC6",
         "TextControlBackgroundBrush": "#FFFFFFFF",
         "TextControlBackgroundFocusedBrush": "#FFFFFFFF",
+        "ScrollBarThumbFill": "#FF72BBC4",       # accent 45 % over --line
         "SystemFillColorSuccessBrush": "#FF2E7D32",
         "SystemFillColorCautionBrush": "#FFF57F17",
         "SystemFillColorCriticalBrush": "#FFD32F2F",

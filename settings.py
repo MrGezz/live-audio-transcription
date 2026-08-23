@@ -516,6 +516,15 @@ SCHEMA = [
           "missing either just means no panel, transcription is unaffected. "
           "Independent of the web panel - both can be open at once.",
           cli="--wpf", rebuild="restart"),
+    Field("wpf_theme", "choice", "dark", "web", "Desktop panel theme",
+          "Applied live: the window re-themes in place, no restart. A "
+          "setting rather than a button in the window so that it persists "
+          "with the rest and shows in both panels - read-only in the "
+          "browser, which keeps its own switch in its top bar and cannot "
+          "move this one.",
+          choices=[{"value": "dark", "label": "Dark (charcoal)"},
+                   {"value": "light", "label": "Light"}],
+          cli="--wpf-theme", show_if={"wpf": [True]}),
 ]
 
 BY_KEY = dict((f.key, f) for f in SCHEMA)
@@ -525,9 +534,10 @@ DEFAULTS = dict((f.key, f.default) for f in SCHEMA)
 # to the network must not be able to point --model at an arbitrary path or
 # move the listener out from under itself; those are decisions for whoever
 # started the process. "wpf" is here for the same reason: whether a window
-# opens on the host machine belongs to whoever is sitting at it.
+# opens on the host machine belongs to whoever is sitting at it - and so does
+# what that window looks like, which is "wpf_theme".
 REMOTE_LOCKED = ("web", "web_host", "web_port", "web_token", "web_open",
-                 "wpf")
+                 "wpf", "wpf_theme")
 
 
 class SettingsError(ValueError):
