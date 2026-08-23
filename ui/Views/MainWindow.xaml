@@ -420,7 +420,7 @@
                                 Background="{DynamicResource PanelDangerBrush}"
                                 Visibility="{Binding StatusBar.HasUnreadLogs, Converter={StaticResource BoolToVis}}">
                             <TextBlock FontSize="10.5" FontWeight="SemiBold"
-                                       Foreground="#FF0B1013"
+                                       Foreground="{DynamicResource PanelDangerInkBrush}"
                                        Text="{Binding StatusBar.UnreadLabel}" />
                         </Border>
                     </StackPanel>

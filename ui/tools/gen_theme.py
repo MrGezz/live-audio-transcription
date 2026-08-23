@@ -138,39 +138,57 @@ LIGHT = {
         "#263238",   # --text
     ],
     "pin": {
+        # The SAME key set as DARK's pins, token for token. The first light
+        # render (2026-08-23) found this block a strict subset of DARK's, so
+        # eight keys fell through to the luma retint and came out as colours
+        # no palette defines. Same alphas as DARK too - they are the webui's
+        # banner rules - except --accent-soft, which is 10% in light.
         "ApplicationBackgroundBrush": "#FFECEFF1",
         "SolidBackgroundFillColorBaseBrush": "#FFECEFF1",
-        "SolidBackgroundFillColorSecondaryBrush": "#FFE7EDF0",
+        # --bg-2, as in DARK. The house guideline's palette table says
+        # #E7EDF0 for light --bg-2; the website and webui/style.css both say
+        # #FFFFFF, and they are what this file mirrors.
+        "SolidBackgroundFillColorSecondaryBrush": "#FFFFFFFF",
+        "SolidBackgroundFillColorTertiaryBrush": "#FFFFFFFF",      # --panel
+        "SolidBackgroundFillColorQuarternaryBrush": "#FFE7EDF0",   # --panel-2
         "LayerFillColorDefaultBrush": "#FFFFFFFF",
+        "LayerFillColorAltBrush": "#FFFFFFFF",                     # --panel
         "CardBackgroundFillColorDefaultBrush": "#FFFFFFFF",
+        # DARK's secondary card is one step LIGHTER than the card. Light
+        # cards are already white, so the step has to go the other way.
+        "CardBackgroundFillColorSecondaryBrush": "#FFE7EDF0",      # --panel-2
         "CardStrokeColorDefaultBrush": "#FFCFD8DC",
+        "CardStrokeColorDefaultSolidBrush": "#FFCFD8DC",
         "ControlStrokeColorDefaultBrush": "#FFCFD8DC",
+        "ControlStrokeColorSecondaryBrush": "#FFE3EAEE",           # --line-soft
         "DividerStrokeColorDefaultBrush": "#FFE3EAEE",
         "TextFillColorPrimaryBrush": "#FF263238",
         "TextFillColorSecondaryBrush": "#FF546E7A",
         "TextFillColorTertiaryBrush": "#FF78909C",
+        "TextFillColorDisabledBrush": "#FFAFBFC6",
         "TextControlBackgroundBrush": "#FFFFFFFF",
-        "SystemFillColorSuccessBrush": "#FF388E3C",
-        "SystemFillColorCautionBrush": "#FFF57C00",
+        "TextControlBackgroundFocusedBrush": "#FFFFFFFF",
+        "SystemFillColorSuccessBrush": "#FF2E7D32",
+        "SystemFillColorCautionBrush": "#FFF57F17",
         "SystemFillColorCriticalBrush": "#FFD32F2F",
         "SystemFillColorAttentionBrush": "#FF0097A7",
         "SystemFillColorNeutralBrush": "#FF546E7A",
-        "SystemFillColorSuccessBackgroundBrush": "#1F388E3C",
-        "SystemFillColorCautionBackgroundBrush": "#1FF57C00",
-        "SystemFillColorCriticalBackgroundBrush": "#1FD32F2F",
-        "SystemFillColorAttentionBackgroundBrush": "#1F0097A7",
-        "SystemFillColorNeutralBackgroundBrush": "#14546E7A",
-        "InfoBarWarningSeverityBackgroundBrush": "#1FF57C00",
-        "InfoBarWarningSeverityBorderBrush": "#4DF57C00",
-        "InfoBarWarningSeverityIconBackground": "#FFF57C00",
-        "InfoBarErrorSeverityBackgroundBrush": "#1FD32F2F",
-        "InfoBarErrorSeverityBorderBrush": "#4DD32F2F",
+        "SystemFillColorSuccessBackgroundBrush": "#1C2E7D32",
+        "SystemFillColorCautionBackgroundBrush": "#1CF57F17",
+        "SystemFillColorCriticalBackgroundBrush": "#1CD32F2F",
+        "SystemFillColorAttentionBackgroundBrush": "#190097A7",
+        "SystemFillColorNeutralBackgroundBrush": "#1A546E7A",
+        "InfoBarWarningSeverityBackgroundBrush": "#1CF57F17",
+        "InfoBarWarningSeverityBorderBrush": "#61F57F17",
+        "InfoBarWarningSeverityIconBackground": "#FFF57F17",
+        "InfoBarErrorSeverityBackgroundBrush": "#1CD32F2F",
+        "InfoBarErrorSeverityBorderBrush": "#66D32F2F",
         "InfoBarErrorSeverityIconBackground": "#FFD32F2F",
-        "InfoBarSuccessSeverityBackgroundBrush": "#1F388E3C",
-        "InfoBarSuccessSeverityBorderBrush": "#4D388E3C",
-        "InfoBarSuccessSeverityIconBackground": "#FF388E3C",
-        "InfoBarInformationalSeverityBackgroundBrush": "#1F0097A7",
-        "InfoBarInformationalSeverityBorderBrush": "#4D0097A7",
+        "InfoBarSuccessSeverityBackgroundBrush": "#1C2E7D32",
+        "InfoBarSuccessSeverityBorderBrush": "#612E7D32",
+        "InfoBarSuccessSeverityIconBackground": "#FF2E7D32",
+        "InfoBarInformationalSeverityBackgroundBrush": "#190097A7",
+        "InfoBarInformationalSeverityBorderBrush": "#590097A7",
         "InfoBarInformationalSeverityIconBackground": "#FF0097A7",
         "InfoBarBorderBrush": "#FFCFD8DC",
         "InfoBarTitleForeground": "#FF263238",
@@ -277,7 +295,7 @@ def collect(dark):
     merged.MergedDictionaries.Add(td)
     merged.MergedDictionaries.Add(ControlsDictionary())
 
-    solids, grads = {}, {}
+    solids, grads, dynamic = {}, {}, set()
 
     def walk(rd):
         for sub in rd.MergedDictionaries:
@@ -289,6 +307,22 @@ def collect(dark):
             except Exception:  # noqa: BLE001
                 continue
             if isinstance(value, SolidColorBrush):
+                # A Color set with {DynamicResource} - which is how WPF-UI
+                # writes every accent-derived brush (ToggleSwitchFillOn,
+                # SliderThumbBackground, TextControlFocusedBorderBrush, 36 of
+                # them) - is an unresolved EXPRESSION in a standalone
+                # dictionary, and .Color reads as transparent. Freezing that
+                # is how the ON toggle lost its track on the first real
+                # render. Left OUT of the generated file, the brush keeps its
+                # reference and follows whatever the accent manager sets at
+                # runtime. Detected by what the value IS, not by its name:
+                # the _is_accent_key filter below only ever saw the keys with
+                # "Accent" in them.
+                local = value.ReadLocalValue(SolidColorBrush.ColorProperty)
+                if "Expression" in type(local).__name__:
+                    dynamic.add(name)
+                    solids.pop(name, None)
+                    continue
                 c = value.Color
                 solids[name] = (c.A, c.R, c.G, c.B)
             elif isinstance(value, LinearGradientBrush):
@@ -304,12 +338,13 @@ def collect(dark):
                 }
 
     walk(merged)
-    return solids, grads
+    return solids, grads, dynamic
 
 
 def emit(dark):
+    """Write one theme file. Returns the set of keys it defined."""
     palette = DARK if dark else LIGHT
-    solids, grads = collect(dark)
+    solids, grads, dynamic = collect(dark)
 
     lines = [
         "<!--",
@@ -324,6 +359,11 @@ def emit(dark):
         "    Colours come from webui/style.css, so the desktop panel and the",
         "    browser panel cannot drift apart. Regenerate after upgrading the",
         "    WPF-UI package.",
+        "",
+        "    Brushes whose Color is a {DynamicResource} in WPF-UI - the accent",
+        "    family: toggle ON fills, slider thumbs, focus borders - are NOT",
+        "    restated here on purpose. They follow the accent applied at",
+        "    runtime (PanelHost.ApplyAccent, from PanelAccentBrush).",
         "-->",
         "<ResourceDictionary "
         "xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"",
@@ -334,10 +374,12 @@ def emit(dark):
 
     pinned = palette["pin"]
     n_pin = n_moved = n_kept = 0
+    emitted = set()
 
     for name in sorted(solids):
         if _is_accent_key(name):
             continue
+        emitted.add(name)
         if name in pinned:
             value = pinned[name]
             n_pin += 1
@@ -359,6 +401,7 @@ def emit(dark):
             lines.append(
                 "    <SolidColorBrush x:Key=\"{0}\" Color=\"{1}\" />"
                 .format(name, pinned[name]))
+            emitted.add(name)
             n_pin += 1
 
     lines.append("")
@@ -387,7 +430,10 @@ def emit(dark):
 
     print("  {0}".format(os.path.relpath(out, REPO)))
     print("     {0} brushes  ({1} pinned, {2} retinted, {3} left alone), "
-          "{4} gradients".format(len(solids), n_pin, n_moved, n_kept, len(grads)))
+          "{4} gradients; {5} accent-bound brushes left to the runtime"
+          .format(len(solids), n_pin, n_moved, n_kept, len(grads),
+                  len(dynamic)))
+    return emitted
 
 
 def main():
@@ -414,8 +460,18 @@ def main():
         Application()
 
     print("generating themes from the live WPF-UI dictionary")
-    emit(dark=True)
-    emit(dark=False)
+    dark_keys = emit(dark=True)
+    light_keys = emit(dark=False)
+
+    # The pair must define the same keys: a DynamicResource to a key that
+    # exists in one theme only resolves in that theme and silently falls
+    # back in the other. The first light render found exactly one such key.
+    odd = sorted(dark_keys ^ light_keys)
+    if odd:
+        print("  KEY SETS DIFFER between Charcoal.xaml and CharcoalLight.xaml: "
+              + ", ".join(odd))
+        return 1
+    print("  both themes define the same {0} keys".format(len(dark_keys)))
     return 0
 
 

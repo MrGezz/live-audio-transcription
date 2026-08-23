@@ -47,6 +47,15 @@ from pipeline import Pipeline
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEBUI_DIR = os.path.join(HERE, "webui")
 PRESET_DIR = os.path.join(HERE, "presets")
+
+# Shipped profiles live in a SUBDIRECTORY of the user's preset folder, and the
+# nesting is doing two jobs. .gitignore ignores "presets/*.json" because saved
+# presets are personal setups - but a gitignore * never crosses a /, so files
+# one level down are tracked with no negation rule to maintain. And it makes
+# "shipped" structural instead of a blessed-name list in code: Save always
+# writes to PRESET_DIR, so saving over a built-in's name SHADOWS it rather than
+# destroying it, and deleting that shadow brings the built-in back.
+BUILTIN_PRESET_DIR = os.path.join(PRESET_DIR, "builtin")
 MODEL_DIR = os.path.join(HERE, "_models")
 SERVER_CMD = os.path.join(HERE, "start_whisper_server.cmd")
 
@@ -623,16 +632,41 @@ class App(object):
         return cleaned.strip().strip(".")[:64]
 
     def _list_presets(self):
-        try:
-            return sorted(os.path.splitext(os.path.basename(p))[0]
-                          for p in glob.glob(os.path.join(PRESET_DIR, "*.json")))
-        except OSError:
-            return []
+        """Every preset name, shipped and personal, each appearing once.
+
+        A user preset shadows a built-in of the same name, so the name is
+        listed once either way and `_preset_file` decides which file it means.
+        """
+        names = set()
+        for directory in (BUILTIN_PRESET_DIR, PRESET_DIR):
+            try:
+                for path in glob.glob(os.path.join(directory, "*.json")):
+                    names.add(os.path.splitext(os.path.basename(path))[0])
+            except OSError:
+                continue
+        return sorted(names)
+
+    @staticmethod
+    def _preset_file(safe):
+        """The file a preset name refers to, or None.
+
+        The user's own copy wins; the shipped one is the fallback. Saving over
+        a built-in's name therefore overrides it without touching the tracked
+        file, and deleting that copy restores the original.
+        """
+        if not safe:
+            return None
+        user = os.path.join(PRESET_DIR, safe + ".json")
+        if os.path.exists(user):
+            return user
+        builtin = os.path.join(BUILTIN_PRESET_DIR, safe + ".json")
+        return builtin if os.path.exists(builtin) else None
 
     def _preset_save(self, name):
         safe = self._safe_preset_name(name)
         if not safe:
-            return {"error": "A preset needs a name."}
+            return {"error": "A preset needs a name.",
+                    "presets": self._list_presets()}
         settings_mod.save_preset(os.path.join(PRESET_DIR, safe + ".json"),
                                  self.settings)
         self._broadcast_presets()
@@ -640,26 +674,44 @@ class App(object):
 
     def _preset_load(self, name):
         safe = self._safe_preset_name(name)
-        path = os.path.join(PRESET_DIR, safe + ".json")
-        if not safe or not os.path.exists(path):
-            return {"error": "No preset called '{0}'.".format(name)}
+        path = self._preset_file(safe)
+        if path is None:
+            return {"error": "No preset called '{0}'.".format(name),
+                    "presets": self._list_presets()}
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
         except (OSError, ValueError) as e:
-            return {"error": "Could not read preset: {0}".format(e)}
+            return {"error": "Could not read preset: {0}".format(e),
+                    "presets": self._list_presets()}
         data.pop("_comment", None)
         changed, errors = self.pipeline.apply(data, remote=True)
-        return {"loaded": safe, "changed": changed, "errors": errors}
+        # The list rides on EVERY return, including the error shapes. The
+        # desktop panel refills its dropdown from this ack - SettingsVm's own
+        # comment names the "presets" key as the contract - so a return
+        # without it emptied the preset list on the first load, which is
+        # exactly the gesture the shipped profiles exist for.
+        return {"loaded": safe, "changed": changed, "errors": errors,
+                "presets": self._list_presets()}
 
     def _preset_delete(self, name):
         safe = self._safe_preset_name(name)
-        path = os.path.join(PRESET_DIR, safe + ".json")
-        if safe and os.path.exists(path):
+        user = os.path.join(PRESET_DIR, safe + ".json") if safe else ""
+        if user and os.path.exists(user):
             try:
-                os.remove(path)
+                os.remove(user)
             except OSError as e:
-                return {"error": str(e)}
+                return {"error": str(e), "presets": self._list_presets()}
+        elif self._preset_file(safe):
+            # Only your own copy is deletable. The remaining file is shipped
+            # with the checkout, so removing it would make the name disappear
+            # until the next git restore - and deleting a built-in you had
+            # saved over is how you get the original back, which only works
+            # if this call stops here.
+            return {"error": "'{0}' is a built-in profile. Deleting a saved "
+                             "copy restores it; the original stays."
+                             .format(safe),
+                    "presets": self._list_presets()}
         self._broadcast_presets()
         return {"deleted": safe, "presets": self._list_presets()}
 

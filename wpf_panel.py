@@ -56,6 +56,9 @@ UI_RUNTIMECONFIG = os.path.join(
     RUNTIME_DIR, "LiveTranscription.Ui.runtimeconfig.json")
 
 # The web panel's --accent, so the two front ends are visibly the same product.
+# A fallback only: PanelHost.ApplyAccent reads PanelAccentBrush/PanelAccent2Brush
+# from the theme dictionary first, which is what gives the LIGHT theme its own
+# accent (#0097A7) instead of this dark one.
 ACCENT = "#00BCD4"
 
 _LOADED = False
@@ -265,14 +268,30 @@ def _bridge_class():
         def GetPresetsJson(self):
             return json.dumps(self._app._list_presets())
 
+        def _preset_ack(self, ack):
+            """
+            Every preset ack carries the list, whatever produced it.
+
+            SettingsVm.SetPresets clears its dropdown and refills it from the
+            ack's "presets" key - its own comment names the key as the
+            contract - so an ack without one empties the list. app.py keeps
+            it on every return, error shapes included; this is the same
+            guarantee at the one place all of them cross into the panel, so
+            a stub (soak.py's _preset_load answers {"error": ...} alone) or
+            a future return path that forgets cannot blank the list either.
+            """
+            if "presets" not in ack:
+                ack = dict(ack, presets=self._app._list_presets())
+            return json.dumps(ack)
+
         def PresetSave(self, name):
-            return json.dumps(self._app._preset_save(str(name)))
+            return self._preset_ack(self._app._preset_save(str(name)))
 
         def PresetLoad(self, name):
-            return json.dumps(self._app._preset_load(str(name)))
+            return self._preset_ack(self._app._preset_load(str(name)))
 
         def PresetDelete(self, name):
-            return json.dumps(self._app._preset_delete(str(name)))
+            return self._preset_ack(self._app._preset_delete(str(name)))
 
         # ---- audio in ------------------------------------------------------
 

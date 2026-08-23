@@ -1,0 +1,5 @@
+{
+  "_comment": "Shipped VAD profile - the panel equivalent of run_pipeline.cmd's [2] Music, which passes --vad-min-speech-ms 60. Sung vocals score far lower than speech, so the gate needs fewer speech frames per window, NOT a lower probability threshold: at 60 ms music reaches 9/10 windows while room tone and fan hum stay at 0/6, whereas lowering the threshold moves every source toward passing together. CONTRIBUTING.md invariant 10 holds the measurements. HAND-AUTHORED: both keys are stated deliberately, because presets apply as a patch and a file listing only vad_min_speech_ms could not switch back on after '3 Off'.",
+  "vad": true,
+  "vad_min_speech_ms": 60
+}

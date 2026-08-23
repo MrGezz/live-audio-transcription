@@ -68,17 +68,22 @@
                          SelectionMode="Single"
                          MaxHeight="320">
                 <ListView.View>
-                    <GridView>
-                        <GridViewColumn Header="buffer" Width="70"
+                    <!-- WPF-UI's GridView, not the stock one: the stock
+                         GridViewColumnHeader template is classic-white and
+                         no theme dictionary touches it, so the header rendered
+                         as a white band with a black hairline in BOTH themes
+                         (first real render, 2026-08-23). -->
+                    <ui:GridView>
+                        <ui:GridViewColumn Header="buffer" Width="70"
                                         DisplayMemberBinding="{Binding BufferText}" />
-                        <GridViewColumn Header="median" Width="80"
+                        <ui:GridViewColumn Header="median" Width="80"
                                         DisplayMemberBinding="{Binding MedianText}" />
-                        <GridViewColumn Header="spread" Width="110"
+                        <ui:GridViewColumn Header="spread" Width="110"
                                         DisplayMemberBinding="{Binding SpreadText}" />
-                        <GridViewColumn Header="chars" Width="70"
+                        <ui:GridViewColumn Header="chars" Width="70"
                                         DisplayMemberBinding="{Binding Chars}" />
-                        <GridViewColumn Header="xRT" Width="90">
-                            <GridViewColumn.CellTemplate>
+                        <ui:GridViewColumn Header="xRT" Width="90">
+                            <ui:GridViewColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding XrtText}">
                                         <TextBlock.Style>
@@ -95,11 +100,11 @@
                                         </TextBlock.Style>
                                     </TextBlock>
                                 </DataTemplate>
-                            </GridViewColumn.CellTemplate>
-                        </GridViewColumn>
-                        <GridViewColumn Header="slide it sustains" Width="120"
+                            </ui:GridViewColumn.CellTemplate>
+                        </ui:GridViewColumn>
+                        <ui:GridViewColumn Header="slide it sustains" Width="120"
                                         DisplayMemberBinding="{Binding SlideText}" />
-                    </GridView>
+                    </ui:GridView>
                 </ListView.View>
             </ui:ListView>
 

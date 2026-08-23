@@ -105,10 +105,15 @@ speech - the number silence_at_end_of_chunk cuts on:
     100 and 160 tie here because this speaker leaves 0.29 - 0.42 s between
     words and 0.83 - 0.86 s between sentences, so both settings split at all
     12 gaps and neither is anywhere near the sentences. 6 segments is the
-    sentence count. faster-whisper defaults this to 2000 ms, which is right
-    for splitting a recording and far too slow for live captions;
-    settings.py defaults it to 160 ms, which is the "do not split on a
-    breath" setting rather than the "split on sentences" one.
+    sentence count, and the finer sweep in settings.py finds where it
+    arrives: 250 ms still reports 13, 400 ms is the first value that reports
+    6, then 800 ms 5 and 1200 ms 1. faster-whisper defaults this to 2000 ms,
+    which is right for splitting a recording and far too slow for live
+    captions; settings.py and create() both default it to 400 ms, and they
+    have to agree, because this is the number silence_at_end_of_chunk cuts
+    on. Splitting at every word gap is not the safe end of this knob - it
+    reports a talker who paused for breath as finished, which is the
+    mid-sentence cut that strategy exists to avoid.
   * min_speech_ms. Runs shorter than this are dropped, so one hot frame from
     a door or a click no longer registers as speech - and no longer defines
     where speech "ended". At 1000 ms the 0.896 s segment at 42.66 s in the
@@ -117,7 +122,33 @@ speech - the number silence_at_end_of_chunk cuts on:
 Gaps are counted in whole 32 ms frames from the frame after the one that
 started them, which is upstream's arithmetic: 100 ms asks for 3 frames and
 so closes on the 4th quiet frame (128 ms), 160 ms closes on the 6th
-(192 ms), 500 ms on the 17th (544 ms).
+(192 ms), the 400 ms default on the 13th (416 ms - 12 frames, not 13,
+because round() sends 12.5 to even), 500 ms on the 17th (544 ms).
+
+What the end of the buffer means
+--------------------------------
+Live audio ends wherever capture happened to stop, not where the talker
+did, so the last run is usually still open, and two rules keep an open run
+from being read as a finished one:
+
+  * It ends at the buffer edge, not where a pending quiet stretch began. A
+    gap that has not yet lasted min_silence_ms is, by the rule this gate
+    was given, not the end of speech. Reporting its start as
+    last_speech_end let chunk_offset alone decide when the talker had
+    stopped, and min_silence_ms acted nowhere the strategy looked - at the
+    defaults (400 ms here, 0.4 s there) the two coincide to the frame, so
+    nothing showed, but at 800 ms the gate was told to wait 832 ms and the
+    chunk was cut after 416.
+  * It is never dropped for being shorter than min_speech_ms. That filter
+    judges complete runs; an open one has only a length so far, and a word
+    190 ms in is not a click. Dropped, last_speech_end fell back to the
+    previous segment and the strategy cut through the word: measured at
+    --vad-min-silence-ms 160, the chunk was cut at 25.09 s, 0.19 s into a
+    sentence, because the 6-frame open run at 24.89 s lost to min_frames 8.
+
+So silence_at_end_of_chunk cuts once the gate has closed the last run (the
+gap lasted min_silence_ms) AND chunk_offset of quiet has passed since it
+ended - the later of the two. At the defaults that is the same instant.
 
 speech_pad_ms is deliberately NOT ported. Upstream pads each segment because
 it then CUTS the audio at those timestamps, where a hard edge clips the
@@ -132,8 +163,10 @@ When the force-cut length is reached mid-sentence, something has to give.
 Cutting at the deadline lands wherever the deadline falls, which is usually
 inside a word: mean level over +/- 50 ms at the 8.0 s mark of the 49.3 s
 sample measured 0.0756, and 0.0656 - 0.0756 at the other deadlines tried.
-GateResult.pauses lists the silences between speech runs longest first, and
-best_cut() returns the middle of the longest one that fits: at limit_s=8
+GateResult.pauses lists every silence of at least MIN_PAUSE_MS - between
+speech runs, and the breaths inside one that did not last min_silence_ms -
+longest first, and best_cut() returns the middle of the longest one that
+fits: at limit_s=8
 that is 3.408 s, where the same window measures 0.0000 - the pauses in this
 sample run 0.00001 - 0.0006 inside and this one is digital silence - i.e.
 two to five orders of magnitude quieter. The midpoint rather than either
@@ -146,7 +179,14 @@ deadline lives. Upstream keeps `possible_ends` inside the scan and, on
 reaching the limit, splits at the longest of them rather than at the limit
 itself; our limit is not a property of the VAD at all - it is buffering.py's
 force-cut length, applied after the pass - so the same choice is offered as
-best_cut(limit_s=...) over the pauses the scan reported.
+best_cut(limit_s=...) over the pauses the scan reported. Upstream records
+those candidates the moment a silence clears min_silence_at_max_speech
+(98 ms), whether or not it goes on to clear min_silence_duration_ms and end
+the speech; the breaths here are the same rule. Without them the list held
+only the gaps between runs, which min_silence_ms decides: at the 400 ms
+default no breath under 416 ms was ever a candidate, and at 1200 ms a 27 s
+chunk with eleven 0.3 - 0.85 s breaths in it had no pauses at all, so the
+force-cut landed wherever the clock said.
 
 No new dependency: onnxruntime and a bundled silero model both arrive with
 faster-whisper. If neither is present this degrades to None and the caller
@@ -163,6 +203,12 @@ SAMPLERATE = 16000
 HOP = 512               # 32 ms at 16 kHz - Silero's frame size
 CONTEXT = 64            # extra left-context samples the v6 export expects
 MIN_PAUSE_MS = 98       # upstream's min_silence_at_max_speech default
+# In whole frames, rounded UP (the -(-a // b) idiom): the smallest count whose
+# duration clears the floor best_cut() applies in seconds, so every breath
+# _speech_runs() reports is one best_cut() will take. round() would say 3
+# frames, 96 ms, which the 98 ms floor rejects; 4 frames is also exactly
+# where upstream's "> min_silence_at_max_speech" lands in samples.
+MIN_PAUSE_FRAMES = -(-MIN_PAUSE_MS * SAMPLERATE // (1000 * HOP))     # 4
 
 _MODELS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_models")
 
@@ -209,9 +255,12 @@ def _bundled_model():
     return _newest(os.path.join(assets, "silero_vad*.onnx"))
 
 
-def _speech_runs(probs, threshold, neg_threshold, min_silence_frames):
+def _speech_runs(probs, threshold, neg_threshold, min_silence_frames,
+                 min_pause_frames=MIN_PAUSE_FRAMES):
     """
-    Runs of speech as (start_frame, end_frame), upstream's state machine.
+    (runs, breaths): runs of speech as (start_frame, end_frame), upstream's
+    state machine, and the quiet stretches inside them that lasted at least
+    min_pause_frames without ending one.
 
     A port of get_speech_timestamps in faster_whisper/vad.py, counted in
     whole 32 ms frames rather than samples because one frame is what one
@@ -223,9 +272,19 @@ def _speech_runs(probs, threshold, neg_threshold, min_silence_frames):
 
     Frames rather than seconds, and every run rather than only the long
     ones, because both of the things built from this need the raw article:
-    GateResult drops the short runs from .segments, _pauses() does not.
+    GateResult drops the short runs from .segments, _pauses() does not. A
+    run still open when the probabilities run out ends at len(probs) - one
+    past the last frame index, where no closed run can end - and the tail
+    of the loop says why a pending silence does not close it.
+
+    The breaths are upstream's prev_end, kept as (start, end) so a cut can
+    land in the middle of one: a silence that cleared
+    min_silence_at_max_speech but not min_silence_duration_ms does not end
+    the speech, but it is still the place to split it when the speech runs
+    too long. Reported here because this loop is the only thing that sees
+    them - by the time a run is out, the breaths inside it are gone.
     """
-    out = []
+    runs, breaths = [], []
     triggered = False
     start = 0
     temp_end = 0
@@ -235,7 +294,10 @@ def _speech_runs(probs, threshold, neg_threshold, min_silence_frames):
 
         if prob >= threshold and temp_end:
             # Speech came back before the gap lasted long enough to count,
-            # so it was a breath inside a sentence, not the end of one.
+            # so it was a breath inside a sentence, not the end of one -
+            # and, if it lasted min_pause_frames, a cut candidate.
+            if i - temp_end >= min_pause_frames:
+                breaths.append((temp_end, i))
             temp_end = 0
 
         if prob >= threshold and not triggered:
@@ -247,32 +309,63 @@ def _speech_runs(probs, threshold, neg_threshold, min_silence_frames):
             if not temp_end:
                 temp_end = i
             # Measured from the frame the gap started on, not including it,
-            # which is upstream's arithmetic: min_silence_frames of 5 (the
-            # 160 ms default) closes on the 6th quiet frame, 192 ms in.
+            # which is upstream's arithmetic: min_silence_frames of 5
+            # (160 ms) closes on the 6th quiet frame, 192 ms in, and the
+            # 400 ms default's 12 close on the 13th, 416 ms in.
             if i - temp_end < min_silence_frames:
                 continue
             # Ends where the quiet started, not where it was confirmed:
             # min_silence_frames is how long we wait before believing the
             # talker stopped, not part of how long they talked.
-            out.append((start, temp_end))
+            runs.append((start, temp_end))
             triggered = False
             temp_end = 0
 
     if triggered:
-        # The buffer ran out mid-segment. End it at temp_end when a silence
-        # was already pending: upstream ends at the end of the audio because
-        # it is about to cut there and pads the edge anyway, but that would
-        # report speech across a stretch every frame of which scored below
-        # neg_threshold - and "how long has it been quiet at the end" is the
-        # entire question silence_at_end_of_chunk asks this function. Report
-        # the buffer end and chunk_offset can never be satisfied early.
-        out.append((start, temp_end or len(probs)))
-    return out
+        # The buffer ran out with the run still open - inside speech, or
+        # inside a quiet stretch that has not yet lasted min_silence_frames,
+        # which by the rule this function was handed is the same thing: a
+        # talker who has not stopped. So the run ends at the buffer edge,
+        # len(probs), one past any index a closed run can end on, which is
+        # how GateResult tells an open run from a finished one.
+        #
+        # It used to end at temp_end when a silence was pending, so that
+        # "how long has it been quiet at the end" - the question
+        # silence_at_end_of_chunk asks - was answered by chunk_offset alone
+        # and could never be held up by min_silence_ms. That made
+        # min_silence_ms inert at the one place it is documented to act:
+        # told to wait 832 ms, the gate reported a gap as the end of speech
+        # on the frame it began, and the strategy cut in it after 416. At
+        # the defaults the two coincide to the frame, which is why nobody
+        # noticed. Upstream ends an open run at the end of the audio too.
+        n = len(probs)
+        if temp_end and n - temp_end >= min_pause_frames:
+            # The pending quiet is a candidate too - upstream's prev_end was
+            # set the moment it cleared min_silence_at_max_speech - so a
+            # force-cut can land in it rather than behind the last word.
+            breaths.append((temp_end, n))
+        runs.append((start, n))
+    return runs, breaths
 
 
-def _pauses(runs):
+def _pauses(runs, breaths):
     """
-    The silences between consecutive speech runs, as (start, end, duration).
+    Every silence a force-cut could land in, as (start, end, duration).
+
+    Two kinds, and the second is why this is not simply "the gaps between
+    runs". A gap only splits a run once it has lasted min_silence_ms, so
+    between runs alone the list was empty of everything shorter - at the
+    400 ms default no breath under 416 ms was ever a candidate, and at
+    1200 ms a 27 s chunk with eleven 0.3 - 0.85 s breaths in it had NO
+    pauses at all: the force-cut landed wherever the clock said, the blunt
+    cut best_cut() exists to avoid, and its MIN_PAUSE_MS floor was dead
+    code with nothing to reject. Upstream keeps the two rules apart -
+    prev_end is recorded as soon as a silence clears
+    min_silence_at_max_speech, whether or not it goes on to clear
+    min_silence_duration_ms - and so does this: `breaths` are the quiet
+    stretches of at least MIN_PAUSE_MS that did NOT end a run, reported by
+    _speech_runs() alongside the runs they sit inside. The list is the same
+    whatever min_silence_ms is set to.
 
     Between the RUNS, not between the segments left after min_speech_ms
     threw the short ones out: a discarded run is still audio with a voice in
@@ -299,7 +392,9 @@ def _pauses(runs):
     """
     step = float(HOP) / SAMPLERATE
     gaps = [(runs[i][1], runs[i + 1][0]) for i in range(len(runs) - 1)]
-    gaps.sort(key=lambda gap: gap[1] - gap[0], reverse=True)
+    gaps += breaths
+    gaps.sort()                     # spoken order first, so that the stable
+    gaps.sort(key=lambda gap: gap[1] - gap[0], reverse=True)   # sort keeps it
     return [(a * step, b * step, (b - a) * step) for a, b in gaps]
 
 
@@ -331,14 +426,25 @@ class GateResult(object):
         # by a frame would silently retune every configuration in the field.
         self.frames = int((probs > threshold).sum())
         self.has_speech = self.frames >= min_frames
-        runs = _speech_runs(probs, threshold, neg_threshold,
-                            min_silence_frames)
+        runs, breaths = _speech_runs(probs, threshold, neg_threshold,
+                                     min_silence_frames)
         step = float(HOP) / SAMPLERATE
+        n = len(probs)
         # min_speech_ms decides what counts as speech, not what counts as a
-        # boundary: the short runs leave .segments and stay in .pauses.
-        self.segments = [(a * step, b * step)
-                         for a, b in runs if b - a >= min_frames]
-        self.pauses = _pauses(runs)
+        # boundary: the short runs leave .segments and stay in .pauses. The
+        # run still open at the buffer end, if there is one, is exempt: what
+        # is known about it is not its length but its length so far, and a
+        # word 190 ms in is not a click. Dropped, last_speech_end falls back
+        # to the previous segment and the strategy cuts through the word -
+        # measured at --vad-min-silence-ms 160, a 6-frame open run at
+        # 24.89 s lost to min_frames 8 and the chunk was cut at 25.09 s,
+        # 0.19 s into the last sentence of the sample. An open run ends
+        # where the audio does, self.duration rather than n * step: a
+        # buffer that is not a whole number of frames long must not leave
+        # a sub-frame sliver of "silence" for a zero chunk_offset to cut on.
+        self.segments = [(a * step, self.duration if b == n else b * step)
+                         for a, b in runs if b == n or b - a >= min_frames]
+        self.pauses = _pauses(runs, breaths)
         # None rather than 0.0 when nothing was said: to the caller asking
         # "is last_speech_end far enough back to transcribe", 0.0 reads as
         # "someone stopped talking at the very start", which is exactly the
@@ -445,7 +551,7 @@ class SpeechGate(object):
 
     @classmethod
     def create(cls, model_path=None, threshold=0.5, min_speech_ms=250,
-               neg_threshold=0.0, min_silence_ms=160):
+               neg_threshold=0.0, min_silence_ms=400):
         """A gate, or None with one line explaining why not."""
         try:
             import onnxruntime as ort

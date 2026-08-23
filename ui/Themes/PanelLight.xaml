@@ -14,7 +14,9 @@
     <SolidColorBrush x:Key="PanelDangerBrush" Color="#FFD32F2F" />
     <SolidColorBrush x:Key="PanelVioletBrush" Color="#FF651FFF" />
     <SolidColorBrush x:Key="PanelAccentBrush" Color="#FF0097A7" />
+    <SolidColorBrush x:Key="PanelAccent2Brush" Color="#FF00838F" />
     <SolidColorBrush x:Key="PanelAccentSoftBrush" Color="#190097A7" />
+    <SolidColorBrush x:Key="PanelDangerInkBrush" Color="#FFFFFFFF" />
 
     <SolidColorBrush x:Key="PanelText2Brush" Color="#FF546E7A" />
     <SolidColorBrush x:Key="PanelMutedBrush" Color="#FF78909C" />

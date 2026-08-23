@@ -23,7 +23,15 @@
     <SolidColorBrush x:Key="PanelDangerBrush" Color="#FFFF5252" />
     <SolidColorBrush x:Key="PanelVioletBrush" Color="#FF7C4DFF" />
     <SolidColorBrush x:Key="PanelAccentBrush" Color="#FF00BCD4" />
+    <!-- the web palette's accent-2, the hover step. PanelHost.ApplyAccent
+         feeds this pair to WPF-UI's accent manager verbatim, so every
+         accent-derived brush (primary buttons, ON toggles, slider thumbs,
+         focus borders) is the web panel's cyan, not a brightened one. -->
+    <SolidColorBrush x:Key="PanelAccent2Brush" Color="#FF4DD0E1" />
     <SolidColorBrush x:Key="PanelAccentSoftBrush" Color="#1F00BCD4" />
+    <!-- ink on the danger fill. NOT theme-invariant: the light danger is
+         darker than this one, so the winning ink flips to white there. -->
+    <SolidColorBrush x:Key="PanelDangerInkBrush" Color="#FF0B1013" />
 
     <!-- text tiers and chrome -->
     <SolidColorBrush x:Key="PanelText2Brush" Color="#FF8FA6B2" />

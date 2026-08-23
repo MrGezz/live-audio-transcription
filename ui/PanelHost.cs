@@ -116,8 +116,34 @@ public sealed class PanelHost
         IsReady = false;
     }
 
-    private static void ApplyAccent(string accent, bool dark)
+    private void ApplyAccent(string accent, bool dark)
     {
+        // The panel's own dictionary (Panel.xaml / PanelLight.xaml, merged
+        // just above) is the source of truth: it is where the webui's
+        // --accent and --accent-2 are transcribed PER THEME, so the light
+        // theme gets #0097A7 rather than the dark #00BCD4 that used to be
+        // passed in regardless. Handing them to the accent manager verbatim
+        // matters as much as which ones: the (colour, theme) overload derives
+        // Primary by brightening, and #00BCD4 came out as #4DEBFF on every
+        // primary button and ON toggle - a cyan the browser panel never
+        // shows. The string from Python is only the fallback for a
+        // dictionary without the keys.
+        if (_app?.Resources["PanelAccentBrush"] is SolidColorBrush accentBrush
+            && _app.Resources["PanelAccent2Brush"] is SolidColorBrush hoverBrush)
+        {
+            // Tiers, as WPF-UI's dictionaries bind them: Primary is the ON
+            // toggle, slider thumb and focus border; Secondary is the accent
+            // button AT REST (measured: the button rendered the secondary
+            // colour); Tertiary is its hover. So rest = --accent on both,
+            // hover = --accent-2.
+            ApplicationAccentColorManager.Apply(
+                systemAccent: accentBrush.Color,
+                primaryAccent: accentBrush.Color,
+                secondaryAccent: accentBrush.Color,
+                tertiaryAccent: hoverBrush.Color);
+            return;
+        }
+
         try
         {
             object? parsed = ColorConverter.ConvertFromString(accent);

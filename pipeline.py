@@ -343,21 +343,37 @@ class Pipeline(object):
                                  "music.")
             self.gate = None
             return
-        # A retune is not a rebuild: the ONNX session does not depend on either
-        # number, and reloading it would cost ~100 ms to change an attribute.
+        # A retune is not a rebuild: the ONNX session does not depend on any
+        # of these four numbers - every one of them is applied to the
+        # probabilities it returns - and reloading it would cost ~100 ms to
+        # change an attribute.
         if self.gate is not None:
             self.gate.configure(threshold=s["vad_threshold"],
-                                min_speech_ms=s["vad_min_speech_ms"])
+                                min_speech_ms=s["vad_min_speech_ms"],
+                                neg_threshold=s["vad_neg_threshold"],
+                                min_silence_ms=s["vad_min_silence_ms"])
             return
         self.gate = SpeechGate.create(
             model_path=(s["vad_model"] or None),
             threshold=s["vad_threshold"],
-            min_speech_ms=s["vad_min_speech_ms"])
+            min_speech_ms=s["vad_min_speech_ms"],
+            neg_threshold=s["vad_neg_threshold"],
+            min_silence_ms=s["vad_min_silence_ms"])
         if self.gate is not None:
+            # Both halves of the tuning, because they answer different
+            # questions and only the first one is about this buffer: the
+            # threshold and the frame count decide whether the buffer is
+            # worth an inference, while the end-of-speech threshold and the
+            # silence length decide where the talker stopped - which is what
+            # silence_at_end_of_chunk cuts on. Reporting only the first pair
+            # is how two of these read as inert for as long as they were.
             self.log("info", "Speech gate: Silero VAD (threshold {0}, needs "
-                             "{1} frames = {2:.0f} ms of speech)".format(
-                                 self.gate.threshold, self.gate.min_frames,
-                                 s["vad_min_speech_ms"]))
+                             "{1} frames = {2:.0f} ms of speech; speech ends "
+                             "below {3:.2f} after {4:.0f} ms of silence)"
+                             .format(self.gate.threshold, self.gate.min_frames,
+                                     s["vad_min_speech_ms"],
+                                     self.gate.neg_threshold,
+                                     s["vad_min_silence_ms"]))
 
     def _build_strategy(self):
         if self.strategy is None:

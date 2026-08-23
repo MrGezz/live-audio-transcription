@@ -185,8 +185,12 @@ SCHEMA = [
     Field("chunk_offset", "float", 0.4, "chunking", "Trailing silence",
           unit="s",
           help="How much quiet has to sit at the end of the chunk before it "
-               "counts as a finished sentence. Too small and it cuts "
-               "mid-word; too large and dense speech never triggers.",
+               "counts as a finished sentence, measured from where the "
+               "speech gate says speech ended - so it cannot fire before "
+               "the gate's own silence rule (Silence ends speech after) "
+               "has, and the later of the two decides. Too small and "
+               "Whisper gets no silence to close the sentence on; too "
+               "large and dense speech never triggers.",
           minimum=0.0, maximum=5.0, step=0.05, cli="--chunk-offset",
           rebuild="strategy",
           show_if={"strategy": ["silence_at_end_of_chunk"]}),
@@ -239,10 +243,13 @@ SCHEMA = [
           rebuild="gate", advanced=True, show_if={"vad": [True]}),
     Field("vad_min_silence_ms", "float", 400, "gate", "Silence ends speech "
           "after", unit="ms",
-          help="How long a gap must last before it counts as the talker "
-               "stopping rather than drawing breath. This is what "
-               "silence_at_end_of_chunk cuts on, so too low means cutting "
-               "mid-sentence - the exact thing that strategy exists to avoid. "
+          help="How long a gap must last before the gate reports the talker "
+               "as stopped rather than drawing breath. silence_at_end_of_chunk "
+               "cannot cut before the gate says so, and then waits for its "
+               "trailing silence on top, so the later of the two decides - at "
+               "the defaults (400 ms here, 0.4 s there) they coincide to the "
+               "frame. Too low splits sentences at every breath, which is "
+               "where force-cuts then land; too high holds captions back. "
                "Measured on a 49 s sample whose sentences number 6, segments "
                "found: 100 ms 13, 160 ms 13, 250 ms 13, 400 ms 6, 500 ms 6, "
                "800 ms 5, 1200 ms 1. Nothing below 250 ms changes anything, "

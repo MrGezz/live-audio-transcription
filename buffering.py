@@ -49,6 +49,7 @@ import difflib
 import numpy as np
 
 from settings import DEFAULTS
+from speech_gate import HOP
 
 SAMPLERATE = 16000
 
@@ -289,6 +290,12 @@ class BufferingStrategy(object):
                     level, result.frames, result.min_frames,
                     int(result.frames * 32)))
 
+    def _hint_word_starting(self, level, tail_s):
+        return ("Audible (level {0:.5f}) but the only speech is the last "
+                "{1:.0f} ms - a word starting as the buffer ended. It stays "
+                "buffered and opens the next chunk."
+                .format(level, tail_s * 1000))
+
 
 class SlidingWindow(BufferingStrategy):
     """
@@ -413,8 +420,9 @@ class SilenceAtEndOfChunk(BufferingStrategy):
 
     Adapted from the strategy of the same name in VoiceStreamAI (MIT,
     Alessandro Saccoia), re-based on our ONNX gate instead of its pyannote
-    pipeline. Two deliberate departures from the original, both marked below:
-    this one does not leak silence, and it cannot wait forever.
+    pipeline. Three deliberate departures from the original, all marked
+    below: this one does not leak silence, it cannot wait forever, and it
+    does not throw the start of a word away with the quiet in front of it.
     """
 
     name = "silence_at_end_of_chunk"
@@ -495,10 +503,37 @@ class SilenceAtEndOfChunk(BufferingStrategy):
             # without limit, and every later pass re-analyses more of it.
             # Nothing arriving later can turn this audio into speech, so drop
             # it - the caller is told why.
-            self._take(held)
-            return Decision("skip", t_start=t_start, duration=duration,
-                            level=level, gate=result, reason="no-speech",
-                            hint=self._hint_no_speech(level, result))
+            #
+            # With one exception: a run still open at the buffer end. Its
+            # frames are under min_frames because the buffer ended inside it,
+            # not because it is a click - a word has just started, and
+            # dropping it with the quiet opens the next chunk mid-word, the
+            # cut this whole strategy exists to avoid. So drop only the quiet
+            # in front of it and keep the run. The leak guard holds: the kept
+            # tail is bounded by _open_run_start at min_frames, so a silent
+            # stream keeps at most one word-start per pass, and the next pass
+            # closes it and drops it as the click it turned out to be.
+            start = self._open_run_start(result, held)
+            if start == 0 and not forced:
+                # The buffer IS the word start - chunk_length is shorter than
+                # min_speech_ms. Still talking, then: wait for more, exactly
+                # as an open run that passed has_speech does below.
+                self._retry_at = held + int(round(self.chunk_offset
+                                                  * SAMPLERATE))
+                return self._wait()
+            if not start:                   # None, or 0 under the force-cut
+                self._take(held)
+                return Decision("skip", t_start=t_start, duration=duration,
+                                level=level, gate=result, reason="no-speech",
+                                hint=self._hint_no_speech(level, result))
+            self._take(start)
+            quiet = audio[:start]
+            return Decision("skip", t_start=t_start,
+                            duration=start / float(SAMPLERATE),
+                            level=float(np.mean(np.abs(quiet))), gate=result,
+                            reason="no-speech",
+                            hint=self._hint_word_starting(
+                                level, (held - start) / float(SAMPLERATE)))
 
         end = result.last_speech_end
         finished = end is not None and end < duration - self.chunk_offset
@@ -570,6 +605,30 @@ class SilenceAtEndOfChunk(BufferingStrategy):
     def _take(self, n):
         self._discard(n)
         self._retry_at = 0
+
+    @staticmethod
+    def _open_run_start(result, held):
+        """
+        Samples of quiet in front of a word starting at the buffer end, or
+        None when the buffer does not end inside a SHORT open run.
+
+        Short is stated on the run's own length, not on result.frames: that
+        count is of frames over the threshold, which an open run undercounts
+        while it idles in the hysteresis band, and a 20-frame run scoring
+        one such frame is "audible but not speech", not a word starting. At
+        most min_frames - the same limit a closed run is dropped under -
+        plus the partial frame a buffer that is not a whole number of frames
+        long ends on.
+        """
+        if not result.segments:
+            return None
+        start_s, end_s = result.segments[-1]
+        if end_s != result.duration:
+            return None                 # closed: judged on its full length
+        start = int(round(start_s * SAMPLERATE))
+        if held - start >= (result.min_frames + 1) * HOP:
+            return None
+        return start
 
     def _pause_cut(self, result, held):
         """

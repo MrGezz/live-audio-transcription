@@ -367,11 +367,22 @@ public sealed class SettingsVm : ViewModelBase
     public void SetPresets(string presetsJson)
     {
         Doc doc = Doc.Parse(presetsJson);
-        Presets.Clear();
 
         // Tolerated in two shapes because _list_presets returns a bare list
-        // and the preset acks carry it under a "presets" key.
+        // and the preset acks carry it under a "presets" key. Anything else
+        // - an object without the key, a null, text that will not parse -
+        // says nothing about the list, so the list is left as it is.
+        // Clearing first and reading second emptied the dropdown on any ack
+        // that forgot the key, which is the one gesture the shipped profiles
+        // exist for. wpf_panel.py's _preset_ack now guarantees the key on
+        // every ack; this is the panel not depending on that.
         Doc list = doc.Kind == JsonValueKind.Array ? doc : doc["presets"];
+        if (list.Kind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        Presets.Clear();
         foreach (Doc p in list.Items())
         {
             Presets.Add(p.Kind == JsonValueKind.String ? p.Str() : p["name"].Str());
@@ -612,31 +623,134 @@ public sealed class SettingsVm : ViewModelBase
 
     // ---- presets -------------------------------------------------------------
 
+    /// <summary>
+    /// Refill the preset list from an ack, toast whatever it refused, and
+    /// return the name the engine actually acted on - empty if it refused.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A preset ack fails in two shapes and app.py returns both. The call can
+    /// fail whole - no preset by that name, a file that will not parse, a
+    /// built-in declining to be deleted - and that arrives as <c>error</c>,
+    /// one sentence, with no work done. Or the file was read and handed to
+    /// <c>Pipeline.apply</c>, which kept the fields it accepted and refused
+    /// the rest; that arrives as <c>errors</c>, the same flat list of
+    /// sentences <see cref="ApplyAck"/> reads, and it means the preset landed
+    /// PARTLY. Both were dropped on the floor here until this method existed,
+    /// so a preset written against an older schema - or hand-edited into
+    /// nonsense - toasted "Preset loaded" and left the panel holding settings
+    /// nobody asked for. handleAck in webui/app.js has read both shapes since
+    /// the browser panel shipped; this is the desktop half of it.
+    /// </para>
+    /// <para>
+    /// Success is tested POSITIVELY, on <paramref name="okKey"/>, rather than
+    /// inferred from the absence of an error the way <see cref="ApplyAck"/>
+    /// has to. The preset acks carry a key naming what they did, so an ack
+    /// that arrives empty or malformed can say nothing instead of
+    /// congratulating the user on a call that never happened.
+    /// </para>
+    /// <para>
+    /// That key also carries the name app.py used, which is not always the one
+    /// that was typed: _safe_preset_name strips a preset name to alphanumerics
+    /// and 64 characters, because the browser panel can be served to a network
+    /// and a preset name is a file name. Toasting what came back names the
+    /// preset that now exists rather than the one that was asked for.
+    /// </para>
+    /// <para>
+    /// The refusals are joined into ONE toast rather than one toast each, the
+    /// way <see cref="ApplyAck"/> joins them. StatusVm.Toast holds four and
+    /// evicts oldest-first, so a preset refusing five fields would push its
+    /// own first complaint off the screen before it could be read. The browser
+    /// affords the loop; four slots do not.
+    /// </para>
+    /// </remarks>
+    private string PresetAck(string ackJson, string okKey, string asked)
+    {
+        // Before the error tests, and on every path: app.py rides the list on
+        // EVERY return, error shapes included, precisely so that a refusal
+        // leaves the dropdown populated instead of empty.
+        SetPresets(ackJson);
+
+        Doc ack = Doc.Parse(ackJson);
+
+        string whole = ack["error"].Str();
+        if (whole.Length > 0)
+        {
+            _toast("Error", "Preset '" + asked + "' was refused", whole);
+            return "";
+        }
+
+        var messages = new List<string>();
+        foreach (Doc e in ack["errors"].Items())
+        {
+            messages.Add(e.Str());
+        }
+
+        string acted = ack[okKey].Str();
+        if (messages.Count == 0)
+        {
+            return acted;
+        }
+
+        // Deliberately returns "" even though the preset partly landed, so the
+        // caller stays silent. "Preset loaded" sitting beside "2 settings were
+        // refused" is the ambiguity this method exists to remove.
+        _toast("Error",
+               messages.Count == 1
+                   ? "One setting in '" + acted + "' was refused"
+                   : messages.Count + " settings in '" + acted + "' were refused",
+               string.Join("\n", messages));
+        return "";
+    }
+
     public void SavePreset(string name)
     {
-        if (!string.IsNullOrWhiteSpace(name))
+        if (string.IsNullOrWhiteSpace(name))
         {
-            SetPresets(_bridge.PresetSave(name));
-            _toast("Success", "Preset saved", name);
+            return;
+        }
+
+        string saved = PresetAck(_bridge.PresetSave(name), "saved", name);
+        if (saved.Length > 0)
+        {
+            _toast("Success", "Preset saved", saved);
         }
     }
 
     public void LoadPreset(string name)
     {
-        if (!string.IsNullOrWhiteSpace(name))
+        if (string.IsNullOrWhiteSpace(name))
         {
-            SetPresets(_bridge.PresetLoad(name));
-            HydrateSettings(_bridge.GetSettingsJson());
-            _toast("Success", "Preset loaded", name);
+            return;
+        }
+
+        string loaded = PresetAck(_bridge.PresetLoad(name), "loaded", name);
+
+        // Re-read on BOTH paths, and the partial one is why. The fields that
+        // landed have to show their new values and the fields that were refused
+        // have to show their old ones - which is what ApplyAck does by hand
+        // with SnapBack, off the list of keys it sent. Nothing here knows which
+        // keys the preset file held, so asking the engine what it actually
+        // holds now gets both halves right without that bookkeeping.
+        HydrateSettings(_bridge.GetSettingsJson());
+
+        if (loaded.Length > 0)
+        {
+            _toast("Success", "Preset loaded", loaded);
         }
     }
 
     public void DeletePreset(string name)
     {
-        if (!string.IsNullOrWhiteSpace(name))
+        if (string.IsNullOrWhiteSpace(name))
         {
-            SetPresets(_bridge.PresetDelete(name));
-            _toast("Informational", "Preset deleted", name);
+            return;
+        }
+
+        string deleted = PresetAck(_bridge.PresetDelete(name), "deleted", name);
+        if (deleted.Length > 0)
+        {
+            _toast("Informational", "Preset deleted", deleted);
         }
     }
 }

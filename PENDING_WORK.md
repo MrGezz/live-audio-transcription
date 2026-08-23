@@ -168,13 +168,14 @@ actionable line and transcription carries on.
 perf and engine events through the real bridge, with a Python thread
 hammering `ApplySettings` (and its settings echo — `HydrateSettings` plus
 `Refilter` over all 61 fields is the heaviest binding path the panel has).
-RSS, handle count and managed heap sampled every 30 s from the CLR itself;
-the verdict compares the last quarter against the second. If the full run
-fails, the View layer moves behind a WebSocket client and everything after
-step 1 changes. Run it on Windows: `.venv\Scripts\python.exe ui\tools\soak.py`
-(or `--minutes 5` as the smoke version). Exit codes: 0 judged and passed,
-1 judged and failed, 2 not judged — a short run, an abort, or a harness that
-could not prove it did what it claims.
+Private bytes, handle count, working set and managed heap sampled every 30 s
+from the CLR itself; the verdict compares the last quarter against the
+second. If the full run fails, the View layer moves behind a WebSocket
+client and everything after step 1 changes. Run it on Windows:
+`.venv\Scripts\python.exe ui\tools\soak.py` (90 minutes; `--minutes 240`
+for the finer release-gate floor, `--minutes 5` as the smoke version). Exit
+codes: 0 judged and passed, 1 judged and failed, 2 not judged — a short run,
+an abort, or a harness that could not prove it did what it claims.
 
 **What the first real run taught the harness.** The original version was
 weaker than its docstring in two ways that a PASS would have hidden:
@@ -203,8 +204,68 @@ versions passed (RSS +0.5 %, handles flat, 764 → 759). An old-harness
 four-hour run was stopped at 17 minutes once the coverage gaps above were
 proven (flat at ~254 MB / 750 handles to that point). The upgraded-harness
 four-hour run started 01:18 on 2026-08-23 against the published
-`ui/runtime` (all tabs realised: ~286 MB / ~752 handles at 17 minutes);
-its verdict: **pending at the time of writing (due ≈ 05:19)**.
+`ui/runtime` (all tabs realised: ~286 MB / ~752 handles at 17 minutes).
+
+**That run was thrown away, and finding out why changed the harness twice.**
+It ended at 29 minutes without a verdict. Two things came out of the post
+mortem, neither of them a leak:
+
+- *It had been invalid since minute 21.* `ui/runtime/LiveTranscription.Ui.dll`
+  was republished at 01:39:14 while that very file was mapped into the
+  running process. A .NET assembly is memory-mapped and paged in lazily, so
+  everything the CLR touched for the first time after 01:39 came from the
+  new build: the last third of the run was a mix of two DLLs. Never publish
+  into `ui/runtime` while a soak holds it — publish to a scratch directory
+  and point `shot.py --runtime` there, which is what that flag is for.
+- *The metric was wrong.* The verdict judged `WorkingSet64`. The working set
+  is the OS's decision about how much of a process's commit stays resident,
+  not how much it owns: measured on this machine, 213 MB resident against
+  375 MB private for the same window. The run watched it fall 293 → 170 MB
+  across a single 30 s sample with allocation flat. A trim landing in the
+  last quarter subtracts from exactly the number being watched — it turns a
+  leak into a PASS, the one direction of error a leak soak must not have.
+  The verdict now judges `PrivateMemorySize64` and prints both columns.
+  (The suspected cause, a minimised window, was tested and **refuted**:
+  minimising moves the working set by under 1 MB on Windows 11. The trim
+  was machine-wide memory pressure, which is precisely why the soak must
+  not depend on it.)
+
+  How it ended is more mundane: empty stderr, no exception, and a clean
+  Python epilogue, so the window took an orderly external close
+  (`_window.Closed` → `_app.Shutdown()`) rather than crashing. Nothing in
+  the harness closes it before the deadline. A window sitting on someone's
+  desktop for four hours is a thing that gets closed — which is its own
+  argument for the run below.
+
+**Four hours was never justified; 90 minutes is.** The soak's power against
+the leak class that actually threatens this design — per-event, a handler
+never unhooked or a container never released — comes from event *count*, and
+the rates are fixed. The aborted run bounded that class hard on its own:
+13,939 `ApplySettings` round trips, each rehydrating all 61 `FieldVm`s,
+moved the handle count by 8. That is under 0.001 handles per event, three
+orders of magnitude below anything that matters, and four hours only
+multiplies the evidence by 2.7. Duration buys sensitivity only against
+time-based drift, at a knowable exchange rate: the two compared windows sit
+T/2 apart and the threshold is 10 % of a ~275 MB baseline, so the smallest
+detectable drift is about **54/T MB per hour** with T in hours — 13.5 MB/h
+at four hours, 36 MB/h at 90 minutes. At the 90-minute floor a panel open
+for an eight-hour workday grows ~290 MB and gets caught; the extra 2.5 hours
+only buys the band below that, drift no one would notice. So the default is
+now 90 minutes, with `--minutes 240` kept for a release gate.
+
+**The run that counts.** 90 minutes against the final `ui/runtime` (theme
+build included), harness judging private bytes, nothing else touching the
+DLL. It vindicated the metric change while it ran: at 4,511 s the working
+set fell 260 → 163 MB, a 37 % drop, while private bytes did not move
+(471.2 → 471.4 MB). Under the old verdict that trim lands squarely in the
+judged last quarter and subtracts ~97 MB from the number being watched.
+Verdict, 2026-08-23 09:33: **PASS** — private bytes 467.2 → 473.7 MB
+(+1.4 %, against a 10 % threshold) and handles 757 → 675, i.e. *down* 82.
+Over the run the bridge carried 42,120 `ApplySettings` round trips (34,715
+from the Python hammer, 7,405 the CLR → Python direction), each rehydrating
+all 61 `FieldVm`s, with every tab realised and cycled. The binding layer
+does not leak, and the View layer stays in C#: the WebSocket-client fallback
+in step 1 is not needed.
 
 ### 7. Packaging and docs — done
 
@@ -261,6 +322,65 @@ output; an 8.0 SDK reproduces it byte-for-byte. The publishes above were
 done with a temporary `global.json` pinning 8.0; the permanent one landed on
 2026-08-23 (repo root, `8.0.100` with `rollForward: latestFeature`, so any
 installed 8.0.x is accepted — open question 7).
+
+### 9. VAD profiles reach the panels (2026-08-23)
+
+`run_pipeline.cmd` has always offered three named speech-detection choices —
+`[1] Speech`, `[2] Music` (`--vad-min-speech-ms 60`), `[3] Off` (`--no-vad`).
+Neither panel did. Both expose the Speech gate as seven raw knobs, so
+"Music" meant knowing that the magic number is 60, which is knowledge that
+lived only in `run_pipeline.cmd` and invariant 10. The panels now ship the
+same three choices as preset files in `presets/builtin/`.
+
+No new UI, and deliberately no `vad_profile` field: invariant 13 forbids
+special-casing a settings key by name in either panel, and a profile field
+would also have become a lie the moment someone hand-edited the underlying
+knob. A preset is honestly a *starting point you then tweak*, which is what
+the launcher's CLI args already are.
+
+Four things had to be true, and three of them were not:
+
+- **Presets apply as a patch.** `_preset_load` hands the file to
+  `pipeline.apply`, which writes only the keys present, so a delta-only file
+  leaks the previous profile's state: a Music of `{vad_min_speech_ms: 60}`
+  cannot switch the gate back on after Off, and an Off that leaves `60`
+  behind arms Music invisibly the next time Silero is re-ticked by hand,
+  because `show_if` hides that field while the gate is off. Every file now
+  states the full union `{vad, vad_min_speech_ms}` — and *only* that union,
+  because pinning `vad_threshold` or the silence knobs would stomp a user's
+  own tuning on every switch. All 24 orderings (6 permutations × repeat ×
+  clean and hand-tuned starts) were run through `validate` plus the real
+  `changed` filter: no errors, final state a pure function of the last
+  profile loaded, user tuning untouched. All six transitions raise a `gate`
+  rebuild.
+- **`save_preset` cannot produce these files.** It stores only *non-default*
+  values, so a "Speech" saved from the UI trims to `{}` — and an empty
+  preset is a silent no-op that still returns `{"loaded": ...}` and toasts
+  success in both panels. They are hand-authored, and invariant 14 now says
+  so, because deleting the "redundant" defaults is the obvious tidy-up and
+  it is the bug.
+- **The desktop panel emptied its own preset dropdown on load.**
+  `SettingsVm.SetPresets` refills the list from the ack and its own comment
+  names `"presets"` as the contract, but `_preset_load` was the one path
+  that never returned it — so the first profile switch cleared the list it
+  was picked from. Fixed in `app.py` (the list now rides on every return of
+  save/load/delete, error shapes included), *not* in C#: invariant 11 would
+  turn a `ui/*.cs` edit into a rebuild plus a 6.4 MB `ui/runtime` diff, and
+  the soak had the DLL mapped.
+- **The browser's preset placeholder had no value.** `renderPresets` rebuilt
+  it with a helper that sets `textContent` only, so its value became its own
+  label and picking it would have asked the engine for a preset called
+  `Presets…`. Harmless while the list was empty; a daily path once three
+  profiles are in it.
+
+Shipped profiles live in `presets/builtin/` rather than `presets/` for two
+reasons. `.gitignore` ignores `presets/*.json` as personal setups, and a
+gitignore `*` never crosses a `/` — so one level down is tracked with no
+negation rule to maintain. And it makes "shipped" structural instead of a
+blessed-name list in code: Save always writes to `presets/`, so saving over
+a built-in's name *shadows* it instead of destroying a tracked file, and
+deleting that shadow restores the original. Verified end to end, including
+that deleting a pure built-in is refused.
 
 ---
 
@@ -438,10 +558,18 @@ packages from `deps.json` and swaps a `runtimeconfig` property; the committed
    machine from the engine. Deliberately cut from v1 — it is a complete second
    client (17 inbound message types, 16 commands, auth, reconnect), which is
    three days, not the one it looks like.
-4. **The four-hour soak.** Ran on real hardware on 2026-08-23 with the
-   upgraded harness; the verdict line at the end of step 6 is the record.
-   Until a PASS is written there, treat any large new retained-state
-   feature in the panel as unproven against leaks.
+4. **The leak soak — PASSED, and settled at 90 minutes rather than four
+   hours.** Ran on real hardware on 2026-08-23: private bytes +1.4 %,
+   handles down 82 over 42,120 bridge round trips (step 6 has the numbers).
+   Re-run it before trusting any large new retained-state feature in the
+   panel.
+   The duration is not a ritual: step 6 sets out the exchange rate (about
+   `54/T` MB per hour of detectable drift, T in hours) and why the per-event
+   leak class — the one this architecture can actually produce — is bounded
+   by event count rather than by the clock. `--minutes 240` is still there
+   for a release gate. What remains genuinely open is whether the panel is
+   ever left running for a *multi-day* stretch; nothing here bounds drift
+   over that horizon, and nobody has needed it to yet.
 5. **Theme fidelity beyond colour.** An audit against the house
    theme-patching guideline (single-agent, unverified — its verification
    pass never ran) lists: WPF-UI's `ControlCornerRadius` 4 where the web

@@ -1089,13 +1089,23 @@ function renderPresets() {
   const sel = $('#presetSelect');
   const cur = sel.value;
   sel.innerHTML = '';
-  sel.append(el('option', null, 'Presets…'));
+  // The empty value is load-bearing. el() sets className and textContent
+  // only, so without it the placeholder's value becomes its own label and
+  // the onchange handler below - which fires on any truthy name - would ask
+  // the engine to load a preset called 'Presets…'. index.html's static
+  // markup has value="" for the same reason; this rebuild has to match it.
+  const placeholder = el('option', null, 'Presets…');
+  placeholder.value = '';
+  sel.append(placeholder);
   S.presets.forEach(p => {
     const o = el('option', null, p);
     o.value = p;
     sel.append(o);
   });
-  sel.value = cur;
+  // Only restore a selection that still exists - a deleted preset would
+  // otherwise leave selectedIndex at -1, which renders as a blank control
+  // rather than showing the placeholder.
+  sel.value = cur && S.presets.includes(cur) ? cur : '';
 }
 
 function showTab(name) {

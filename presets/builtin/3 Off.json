@@ -1,0 +1,5 @@
+{
+  "_comment": "Shipped VAD profile - the panel equivalent of run_pipeline.cmd's [3] Off, which passes --no-vad. Everything is transcribed, including fans, room tone and music, so expect invented captions from silence. vad_min_speech_ms is restored to its default here even though the gate is off: the panels hide that field while vad is false (show_if), so leaving a previous profile's 60 ms behind would arm Music invisibly the moment you tick Silero back on by hand.",
+  "vad": false,
+  "vad_min_speech_ms": 250
+}

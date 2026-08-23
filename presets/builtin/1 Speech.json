@@ -1,0 +1,5 @@
+{
+  "_comment": "Shipped VAD profile - the panel equivalent of run_pipeline.cmd's [1] Speech. HAND-AUTHORED, and it must stay that way: presets apply as a PATCH, so every profile in this family states BOTH keys the family owns, even at their default values. A file listing only what it changes cannot undo the other profiles - loading a 'Music' that sets only vad_min_speech_ms would leave the gate switched off after '3 Off'. The Save button cannot reproduce this file, because save_preset stores only NON-default values and would strip it to nothing. Do not add vad_threshold or the silence knobs here; the launcher never moves them, and pinning them would stomp your own tuning on every profile switch.",
+  "vad": true,
+  "vad_min_speech_ms": 250
+}
