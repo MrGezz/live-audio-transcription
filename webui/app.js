@@ -238,7 +238,11 @@ function makeField(f) {
   wrap.dataset.key = f.key;
   wrap.dataset.group = f.group;
   if (f.advanced) wrap.dataset.advanced = '1';
-  if (f.rebuild && f.rebuild !== 'none' && f.rebuild !== 'restart') wrap.classList.add('rebuilds');
+  /* 'engine' sits with 'restart', not with the live rebuilds: the marker means
+     "changing this tears a running component down", and neither of these does.
+     whisper-server reads its model once at startup, so editing server_model
+     costs the session nothing until someone presses Restart. */
+  if (f.rebuild && !['none', 'restart', 'engine'].includes(f.rebuild)) wrap.classList.add('rebuilds');
   const locked = (S.schema.remoteLocked || []).includes(f.key);
   if (locked) wrap.classList.add('locked');
 
@@ -378,6 +382,23 @@ function choicesFor(f) {
     }
     return list;
   }
+  if (f.choices === 'ggml_models') {
+    /* Sizes in the label because this is the one setting where the number is
+       the decision: a model that cannot hold real time is the thing the perf
+       warning sends you here to change. */
+    const list = (S.models.ggml || []).map(m => ({
+      value: m.name,
+      label: m.size_mb ? m.name + '   (' + m.size_mb + ' MB)' : m.name,
+    }));
+    /* Same guard as `model` below, for the same reason: a remembered file that
+       has since been deleted or renamed must still be visible as the current
+       value, or the dropdown silently shows a different model than the one the
+       setting holds. */
+    if (!list.some(c => c.value === S.settings.server_model)) {
+      list.unshift({ value: S.settings.server_model, label: S.settings.server_model + '   (not in _models)' });
+    }
+    return list;
+  }
   if (f.key === 'model') {
     const list = (S.models.faster_whisper || []).map(m => ({ value: m.path, label: m.name }));
     if (!list.some(c => c.value === S.settings.model)) list.unshift({ value: S.settings.model, label: S.settings.model });
@@ -407,6 +428,7 @@ function noteRebuild(f) {
     save: 'the transcript file is being reopened',
     overlay: 'the overlay is being restyled',
     restart: 'this one only takes effect when the program is started again',
+    engine: 'whisper-server reads this once, at startup - press Restart on the Engine tab to load it now',
   }[f.rebuild];
   if (!what) return;
   setLabel(note, 'warn', f.label + ': ' + what + '.');
@@ -731,16 +753,19 @@ function renderEngine() {
   }
   $('#engineWho').textContent = who.join('  ·  ');
 
-  fillEngineModels(e.models || []);
+  fillEngineModels(e.models || [], e.model || '');
   $('#btnEngineStart').disabled = anyBusy || !!e.pid || e.canStart === false;
   $('#btnEngineRestart').disabled = anyBusy || e.canStart === false;
   $('#btnEngineStop').disabled = anyBusy || !e.pid;
   $('#btnEngineCheck').disabled = anyBusy;
 }
 
-function fillEngineModels(models) {
+function fillEngineModels(models, current) {
   const sel = $('#engineModel');
-  const sig = models.map(m => m.name + m.size_mb).join('|');
+  /* `current` is part of the signature, not just the models: the Settings tab
+     can change server_model while the file list is untouched, and without it
+     here the early-out would leave this dropdown showing the old name. */
+  const sig = models.map(m => m.name + m.size_mb).join('|') + '#' + current;
   if (sel.dataset.sig === sig) return;
   sel.dataset.sig = sig;
   const cur = sel.value;
@@ -753,7 +778,13 @@ function fillEngineModels(models) {
     o.value = m.name;
     sel.append(o);
   });
+  /* An in-progress choice wins over the configured one, so a half-made
+     selection is not yanked out from under the pointer by a status refresh
+     arriving mid-gesture. Otherwise open on what the engine will actually
+     start with - which, since server_model is remembered, is the model this
+     panel used last time rather than the launcher's smallest-file default. */
   if (cur) sel.value = cur;
+  else if (current && models.some(m => m.name === current)) sel.value = current;
 }
 
 function engineArgs() {

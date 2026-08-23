@@ -4,3 +4,10 @@ faster-whisper>=0.6.2
 requests>=2.31.0
 soundcard>=0.4.3
 pythonnet>=3.1.0
+
+# Optional, NVIDIA only: run the faster-whisper backend on the GPU
+# (--local-device cuda). CTranslate2 is built against CUDA 12 and loads
+# cublas64_12.dll by name, so installing a CUDA 13 Toolkit does NOT satisfy
+# it - these wheels carry the libraries themselves. ~1 GB, which is why they
+# are not installed by default; the CPU path needs none of it.
+#   pip install nvidia-cublas-cu12 "nvidia-cudnn-cu12==9.*"

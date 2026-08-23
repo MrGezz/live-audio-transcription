@@ -33,15 +33,21 @@ either download a community build or compile once yourself:
 - https://github.com/jerryshell/whisper.cpp-windows-vulkan-bin (Releases → zip)
 - https://github.com/DomoticX/whisper.cpp-windows-vulkan
 
-**Option B — build yourself (official source, ~5 min):**
+**Option B — build yourself (official source):**
 ```bash
 git clone https://github.com/ggml-org/whisper.cpp
 cd whisper.cpp
-cmake -B build -DGGML_VULKAN=1
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON
 cmake --build build --config Release
-# binaries land in build\bin\Release\
+# binaries land in build\bin\
 ```
 (Requires Visual Studio C++ tools, CMake, and the LunarG Vulkan SDK.)
+
+> **[README → Building whisper.cpp](README.md#building-whispercpp)** is the full
+> version, and worth reading before you build rather than after: which DLLs to
+> copy, why the build path has to be short, and how to produce a binary that
+> runs on machines other than this one. A prebuilt binary that crashes with
+> `STATUS_ILLEGAL_INSTRUCTION` is explained there too.
 
 Copy `whisper-server.exe` **and all DLLs next to it** into:
 ```

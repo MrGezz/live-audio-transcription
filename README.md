@@ -5,7 +5,7 @@ This project transcribes **system audio in real-time** and displays it in a **mo
 This also adds **GPU support via whisper.cpp** — Vulkan for AMD/Intel, CUDA for NVIDIA — behind a pluggable backend system:
 
 - **GPU backend** — [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-server` (Vulkan or CUDA build), reached over local HTTP. Vulkan works on AMD, Intel, and NVIDIA; a CUDA build is the stronger choice on NVIDIA.
-- **CPU backend** — [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) (`int8`), used as an automatic fallback when the server is not running — including when it stops running *mid-session*.
+- **Fallback backend** — [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper), used automatically when the server is not running — including when it stops running *mid-session*. CPU `int8` by default, and that default is load-bearing: this is the path taken *because* the GPU server just died. On NVIDIA it can also run on the card (`--local-device cuda`), which is a sensible choice for `--backend local` and a poor one for the fallback.
 
 > **Why?** Faster-Whisper is built on CTranslate2, which supports NVIDIA CUDA or CPU only. On AMD cards the old `device="cuda"` call silently fell back to CPU. The Vulkan path gives AMD cards real GPU acceleration. NVIDIA users can instead drop a CUDA build into `_whisper.cpp\` — the app does not care which build the server was compiled with.
 
@@ -79,8 +79,8 @@ pip install -r requirements.txt
 ```
 > The venv is still required — the scripts need `numpy`, `sounddevice`, `soundcard`, and `requests` regardless of backend. `faster-whisper` is only imported by the CPU fallback; you may skip it for a server-only setup.
 
-4. **Set up the GPU backend (recommended, AMD-friendly)** — see [SETUP_AMD.md](SETUP_AMD.md) for full details:
-   - Place a whisper.cpp build — Vulkan (AMD/Intel) or CUDA (NVIDIA) — with `whisper-server.exe` and its DLLs under `_whisper.cpp\`
+4. **Set up the GPU backend (recommended, AMD-friendly)** — see [Building whisper.cpp](#building-whispercpp) below, and [SETUP_AMD.md](SETUP_AMD.md) for the AMD walkthrough:
+   - Place a whisper.cpp build — Vulkan (AMD/Intel) or CUDA (NVIDIA) — with `whisper-server.exe` and its DLLs under `_whisper.cpp\`. You will most likely have to build this yourself; it takes one command, but which command matters.
    - Download [`ggml-base-q5_1.bin`](https://huggingface.co/ggerganov/whisper.cpp/tree/main) into `_models\` — this is the filename `start_whisper_server.cmd` looks for by default. Any other GGML model works too; pass its filename as an argument: `start_whisper_server.cmd ggml-medium-q5_0.bin`
 
 5. **Set up the CPU fallback (optional)**
@@ -96,6 +96,142 @@ The server startup log should list your GPU as a Vulkan device (e.g. `ggml_vulka
 > **Prefer a guided setup?** Double-click `Start Transcription.vbs` (or run `run_pipeline.cmd`). It asks which script, capture mode and flags you want, then creates the venv, installs requirements, and starts the server for you. Option **[4] Web UI** skips the questions entirely and opens the control panel instead.
 >
 > Choosing **[4] Web UI** or **[5] Desktop UI** leaves you with **one** window, not three: the panel starts whisper-server itself with no console of its own, and the launcher's console hides once the panel is up. Everything either would have printed goes to `logs/session_*.log` (the last 10 runs are kept), and the server's startup — including the line naming your GPU — also appears in the panel's **Log** tab. The console modes are unchanged, since there the console *is* the transcript.
+
+## Building whisper.cpp
+
+Most people end up building this themselves, and the reason is worth knowing
+before you start: **a whisper.cpp binary is compiled for a GPU architecture
+*and* a CPU instruction set, and neither of those travels.** There are no
+official Windows Vulkan binaries at all, and a build made on someone else's
+machine is the usual cause of the `STATUS_ILLEGAL_INSTRUCTION` crash that
+`start_whisper_server.cmd` already knows how to explain.
+
+The good news is that **you should not hardcode anything.** ggml detects your
+CPU and your GPU on its own; almost every "pin the architecture" instruction
+you will find online makes the result *worse*. The commands below are short on
+purpose.
+
+### Which backend
+
+|  | CUDA | Vulkan |
+|---|---|---|
+| Runs on | NVIDIA, **Turing (sm_75) or newer** | AMD, Intel, **and** NVIDIA |
+| You install | CUDA Toolkit (~3 GB) | LunarG Vulkan SDK (~600 MB) |
+| Speed on NVIDIA | fastest | well behind on quantised models |
+| Prebuilt Windows binaries exist | ✔ (official `whisper-cublas` release zips) | ✘ — community builds only |
+
+On NVIDIA, build CUDA. Vulkan is the only option on AMD and Intel, and it is
+also the answer for **NVIDIA cards older than Turing** — CUDA 13 dropped every
+architecture below `sm_75`, so GTX 900/10-series owners either install a
+CUDA 12.x toolkit or build Vulkan. Check with:
+
+```bash
+nvcc --list-gpu-arch
+```
+
+CUDA 13.3 answers `compute_75` … `compute_121`. If your card is not in that
+list, that toolkit cannot build for it at all.
+
+### Prerequisites
+
+- **Visual Studio 2022 or 2026** with "Desktop development with C++"
+- **CMake 3.24+** and **Ninja** (both ship with the VS C++ workload). whisper.cpp
+  itself builds with far older CMake; 3.24 is what the GPU auto-detection below
+  needs, and under it ggml silently falls back to a generic architecture list
+- **CUDA Toolkit 12.8+** for a CUDA build — 12.8 is the floor for Blackwell
+  (RTX 50-series), or **LunarG Vulkan SDK** for a Vulkan build
+- A **short build path.** This is not a style preference. One real object file
+  is `ggml\src\ggml-cuda\CMakeFiles\ggml-cuda.dir\template-instances\fattn-tile-instance-dkq112-dv112.cu.obj.d`
+  — 104 characters *inside* the build directory, before your own path is added.
+  Build under something like `C:\src\whisper.cpp\build`, not a deeply nested
+  folder, or nvcc fails partway through with `Could not open output file`, an
+  error that says nothing about the real cause: Windows' 260-character limit.
+
+### Build it
+
+```bash
+git clone https://github.com/ggml-org/whisper.cpp
+cd whisper.cpp
+```
+
+Then, from a **x64 Native Tools Command Prompt** (so `cl.exe` is on PATH):
+
+```bash
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON
+cmake --build build --config Release
+```
+
+For Vulkan, swap the one flag:
+
+```bash
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON
+cmake --build build --config Release
+```
+
+**Do not pass `-DCMAKE_CUDA_ARCHITECTURES`.** Left alone, ggml picks `native` —
+it queries the GPU in the machine and builds for exactly that. Setting it by
+hand replaces a correct answer with a guess, and it is how you get a binary
+that runs on your machine and nothing else.
+
+Binaries land in `build\bin\`.
+
+### Install it
+
+Copy into `_whisper.cpp\`:
+
+- `whisper-server.exe`
+- **every `.dll` next to it** — `whisper.dll`, `ggml.dll`, `ggml-base.dll`,
+  `ggml-cpu.dll`, and the backend one (`ggml-cuda.dll` or `ggml-vulkan.dll`)
+- **CUDA builds only:** `cudart64_13.dll`, `cublas64_13.dll` and
+  `cublasLt64_13.dll`, which are **not** produced by the build. Take them from
+  `%CUDA_PATH%\bin\x64\`. Note the `x64` — CUDA 13 moved its redistributables
+  down a level, so every instruction written for CUDA 12 points at the wrong
+  folder and whisper-server fails to start with no message at all.
+
+Then check it:
+
+```bash
+start_whisper_server.cmd
+```
+
+The startup log names the device it found — `ggml_cuda_init: found N CUDA
+devices` or `ggml_vulkan: 0 = ...`. If it names your GPU, you are done.
+
+### Building one that runs on other machines
+
+The defaults above deliberately produce a binary for **this** computer. To
+build one you can hand to someone else, turn the native optimisation off and
+let ggml compile every variant instead:
+
+```bash
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON ^
+      -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON
+```
+
+- `GGML_NATIVE=OFF` stops the compiler targeting the host CPU's exact
+  instruction set. It defaults to **ON**, which is why the naive build is not
+  portable and why `STATUS_ILLEGAL_INSTRUCTION` is so common.
+- `GGML_CPU_ALL_VARIANTS=ON` builds 14 x86 CPU backends — `x64`, `sse42`,
+  `sandybridge`, `haswell`, `skylakex`, `zen4`, `alderlake` and the rest — and
+  picks one at run time. It **requires** `GGML_BACKEND_DL=ON`; ggml stops the
+  configure with a `FATAL_ERROR` otherwise, since the dispatch needs the
+  backends to be loadable modules.
+- Leaving `CMAKE_CUDA_ARCHITECTURES` unset matters even more here. With
+  `GGML_NATIVE=OFF`, ggml switches from `native` to a curated list —
+  `75-virtual 80-virtual 86-real 89-real 90-virtual 120a-real 121a-real` on
+  CUDA 13 — mixing `-real` (compiled device code for common GPUs) with
+  `-virtual` (PTX, which the driver JITs on first run, so future cards still
+  work). Pinning a single `-real` architecture throws all of that away.
+
+### What actually goes wrong
+
+| Symptom | Cause |
+|---|---|
+| `STATUS_ILLEGAL_INSTRUCTION (0xC000001D)` right after "using ... backend" | Binary built with `GGML_NATIVE=ON` on a newer CPU. Not a GPU problem — it happens with `--no-gpu` too. Rebuild here, or build portable as above. |
+| whisper-server exits instantly, no message | Missing `cudart64_13.dll` / `cublas*` — they live in CUDA's `bin\x64`, not `bin`. |
+| `nvcc fatal: Could not open output file ...cu.obj.d` | Build path too long. Move the checkout nearer the drive root. |
+| CUDA build starts on your machine, crashes on another NVIDIA card | `CMAKE_CUDA_ARCHITECTURES` was pinned (or `native` was used) — no PTX was emitted, so there is nothing for the driver to JIT. |
+| `nvcc --list-gpu-arch` does not list your card | CUDA 13 dropped Maxwell, Pascal and Volta. Use CUDA 12.x, or build Vulkan. |
 
 ## Web UI
 
@@ -160,8 +296,31 @@ python live_transcription.py --web --web-host 0.0.0.0 --web-token some-secret
 Then open `http://<this-machine>:8770/?token=some-secret`. The listener binds to
 `127.0.0.1` with no token by default; set one before exposing it, because the
 panel shows the transcript and changes settings. Options that would let a page
-move the listener or point the model path elsewhere are refused from the browser
-regardless.
+move the listener, open a window on the host, point either model path elsewhere
+or choose where the transcript is written are refused from the browser
+regardless — see `REMOTE_LOCKED` in `settings.py`. That list is a backstop, not
+a substitute for the token: it covers the settings a patch can carry, and the
+panel can still start, stop and reconfigure a running session.
+
+A WAV path is handled differently, because `capture="file"` is a feature worth
+keeping rather than a setting worth locking. Instead the *shape* is checked
+wherever an untrusted caller can name a file — `safe_paths.py`, which both the
+file capture and the benchmark go through. From the browser a path must be a
+plain local `.wav`: UNC (`\\host\share\...`) is refused because on Windows
+merely resolving one is an outbound authentication rather than a file read, and
+so are device names (`CON.wav` is the console, not a file) and `x.wav:stream`.
+None of that applies to the desktop panel or the command line, where the person
+naming the file is the person running the process.
+
+Once the listener is bound anywhere but loopback, one more rule turns on: a
+browser may only read WAVs from the install folder. Widen it with
+
+```bash
+set LAT_AUDIO_ROOTS=D:\audio;E:\recordings
+```
+
+before starting. On `127.0.0.1` this rule stays off, because the browser at the
+other end is you.
 
 ## Desktop panel (WPF)
 
@@ -296,9 +455,12 @@ Treat the result as a starting point, not a verdict. The benchmark runs on an ot
 | `--save` | off | Write the transcript to a text file |
 | `--output` | auto-named | Transcript path; with `--save` and no name, defaults to `transcript_YYYYmmdd_HHMMSS.txt` |
 | `--no-overlay` | off | Console-only; skip the on-screen overlay |
-| `--backend` | `auto` | `server` (GPU) / `local` (CPU) / `auto` (server, with automatic CPU fallback and recovery — see [Notes](#notes)) |
+| `--backend` | `auto` | `server` (GPU) / `local` (CPU or CUDA) / `auto` (server, with automatic fallback and recovery — see [Notes](#notes)) |
 | `--server-url` | `http://127.0.0.1:8080` | whisper-server address |
-| `--model` | `_models\faster-whisper-medium` | Faster-Whisper model path (CPU backend only) |
+| `--server-model` | `ggml-base-q5_1.bin` | GGML file the GPU server loads (GPU backend only). Picked from `_models\` in either panel; remembered for the next launch |
+| `--model` | `_models\faster-whisper-medium` | Faster-Whisper model path (`local` backend, and the `auto` fallback) |
+| `--local-device` | `cpu` | Where Faster-Whisper runs: `cpu`, `cuda`, or `auto` (cuda if it loads, else cpu). `cuda` needs the CUDA 12 wheels — see [requirements.txt](requirements.txt); a CUDA 13 Toolkit does **not** supply them |
+| `--local-compute` | `auto` | CTranslate2 compute type. `auto` is `int8` on CPU and `float16` on CUDA; drop to `int8_float16` when VRAM is tight |
 | `--buffer` | `4` | Rolling buffer length in seconds — how much audio each transcription pass sees |
 | `--slide` | `2` | How far the buffer advances per pass. The overlap (`--buffer` minus `--slide`) is what the duplicate filter removes |
 | `--silence-threshold` | `0.01` | Buffers quieter than this are skipped (a throttled `[audio] level ...` hint prints when skipping) |
@@ -341,6 +503,8 @@ always the complete list.
 
 ## Notes
 
+- **Faster-Whisper on an NVIDIA GPU is worth it, but not by default.** Measured here on an RTX 5070 with `faster-whisper-medium` over 26 s of speech: **8.09 s on CPU `int8`, 1.89 s on CUDA `float16`** — 4.3× — and 1.11 s through the app's own decode path. Two things will mislead you if you try this yourself. **Time more than one pass:** cuBLAS/cuDNN start-up and kernel JIT all land on the *first* inference, which measures CUDA at 10.45 s and makes the GPU look 34 % slower than the CPU it is four times faster than. **And "the model loaded" proves nothing:** without the CUDA 12 wheels on the DLL search path a CUDA model constructs fine and then dies on the first inference with `Library cublas64_12.dll is not found`. The app puts them on the path for you; installing them is one line in [requirements.txt](requirements.txt). The default stays `cpu` because under `--backend auto` this is the *fallback*, and the GPU is what just failed.
+
 - **`--backend auto` recovers on its own.** If the GPU server stops answering, the script keeps trying for 5 consecutive passes (~10 s) — a single dropped request is a hiccup, not a dead server — then loads the CPU model and carries on, printing one line. While on CPU it re-checks the server once a minute with a 3-second probe and switches back on the first answer, again one line. The CPU model is only ever loaded the moment it is actually needed, so a session that never loses its server pays nothing for this. `--backend server` and `--backend local` are left alone; they mean what they say.
 - **`--language` pins the spoken language**, and is worth setting when you know it. Detection is not a one-off: it reruns on every buffer, so a short, quiet or music-backed window can be decoded as a different language than the one before it — and the transcript follows. Pinning also removes the detection pass itself. Codes are Whisper's (`en`, `ms`, `ja`, `zh`, `haw`, ...); an unknown code is rejected at startup rather than mid-session, because the two backends disagree about what they accept — whisper.cpp tolerates `english`, Faster-Whisper does not. Captions are labelled with the short code either way — `[en→EN]`, never `[english→ENGLISH]`. whisper-server reports the full name and Faster-Whisper reports the code, so both are mapped to the code; without that, the same audio would change label mid-session the moment `auto` fell back to CPU.
 - Default capture is **WASAPI loopback**: pick the output device you are *listening* on (Enter = Windows default). Whatever plays through it gets transcribed - no Stereo Mix required. Stereo Mix only matters for `--capture input`, and it only hears the Realtek output.
@@ -375,6 +539,7 @@ project/
 ├─ speech_gate.py                # Silero VAD: is there speech, and where did it stop
 ├─ buffering.py                  # Sliding window, or wait-for-silence
 ├─ whisper_backends.py           # whisper-server (GPU) / faster-whisper (CPU) / auto
+├─ safe_paths.py                 # What an untrusted caller may name as a file to read
 ├─ transcript.py                 # txt / jsonl / srt / vtt writers
 ├─ overlay.py                    # The Tk caption strip, fully restyleable
 ├─ wsserver.py                   # RFC 6455 + static HTTP, standard library only
@@ -414,7 +579,9 @@ panel" rather than "no transcription" when either is missing.
 
 ## Models
 
-- **GPU (whisper-server):** `ggml-base-q5_1.bin` from [ggerganov/whisper.cpp on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main) is the default. Other sizes work too (`medium`, `large-v3`, `large-v3-turbo`, ...) — drop the file in `_models\` and pass its filename: `start_whisper_server.cmd ggml-medium-q5_0.bin`. Smaller/more-quantized models transcribe faster, which matters: if inference takes longer than `--slide`, the script starts skipping audio to stay live.
+- **GPU (whisper-server):** `ggml-base-q5_1.bin` from [ggerganov/whisper.cpp on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main) is the default. Other sizes work too (`medium`, `large-v3`, `large-v3-turbo`, ...) — drop the file in `_models\` and either pick it on the panel's Engine tab, set `--server-model`, or pass it to the component directly: `start_whisper_server.cmd ggml-medium-q5_0.bin`. Smaller/more-quantized models transcribe faster, which matters: if inference takes longer than `--slide`, the script starts skipping audio to stay live.
+- **The model you pick is remembered.** Starting the engine on a model writes it to `_state.json` (gitignored), so the next launch starts on the same one instead of falling back to the launcher's default. A preset or a typed `--server-model` still wins over it, and deleting the file restores the default. If the remembered `.bin` is gone, the server starts on the launcher's default and the log says why rather than refusing to start.
+- **Bigger is not always slower.** On an RTX 5070 with a CUDA build, `ggml-large-v3-turbo-q8_0.bin` benchmarked *faster* than `ggml-small-q8_0.bin` end to end (553 ms vs 1243 ms) despite being three times the size, because turbo's decoder is four layers against small's twelve and decode steps dominate. Measure on your own card before assuming the small file is the fast one.
 - **`large-v3-turbo` cannot translate.** It is a distilled *transcription* model — four decoder layers instead of thirty-two — and it accepts the translate task and then decodes the audio in its own language anyway. Measured against a live `whisper-server`: with `-l ja -tr`, `ggml-large-v3-turbo-q8_0.bin` returns Japanese while `ggml-large-v3.bin` and `ggml-base-q5_1.bin` return English for the identical request. Use `large-v3`, `medium` or `base` with `--translate`; turbo is fine for same-language captions. The app detects this and says so in the log rather than labelling the caption as English — see the `--translate` flag.
 - **CPU (Faster-Whisper):** medium model recommended (`int8`). Path configurable via `--model`.
 

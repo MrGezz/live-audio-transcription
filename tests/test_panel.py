@@ -37,6 +37,8 @@ APP = None
 PANEL = None
 TMP = None
 _SAVED_DIRS = None
+_SAVED_STATE = None
+LOGS = []
 
 
 def _make_app_class():
@@ -49,6 +51,13 @@ def _make_app_class():
     import soak
 
     class _Pipe(soak._SoakApp._P):
+        def log(self, level, message):
+            # soak's stand-in has no logger: it drives the panel and measures
+            # it, and never runs the app.py methods that report. Bound handlers
+            # DO log, and a couple of them say something a test wants to read
+            # back, so they land here instead of on the floor.
+            LOGS.append((level, message))
+
         def apply(self, patch, remote=False):
             outer = self._outer
             clean, errors = settings_mod.validate(patch, outer.settings)
@@ -72,11 +81,15 @@ def _make_app_class():
             self._last_overlay_style = None
             self._last_panel_theme = None
 
+    # _list_models is NOT bound: soak's stand-in serves a fixed one-entry list
+    # so the panel has something stable to draw, and taking app.py's real
+    # filesystem scan instead would make these tests depend on which .bin files
+    # happen to be sitting in _models on this machine.
     for name in ("_safe_preset_name", "_list_presets", "_preset_file",
                  "_preset_save", "_preset_load", "_preset_delete",
                  "_broadcast_presets", "_notify", "_on_event",
                  "_overlay_style", "_sync_overlay", "_sync_panel_theme",
-                 "_panel_dark"):
+                 "_panel_dark", "_boot_model", "_remember_model"):
         setattr(TestApp, name, app_mod.App.__dict__[name])
     return TestApp
 
@@ -188,7 +201,7 @@ def _field(key, prop):
 # ---- one window for the module --------------------------------------------
 
 def setUpModule():
-    global APP, PANEL, TMP, _SAVED_DIRS
+    global APP, PANEL, TMP, _SAVED_DIRS, _SAVED_STATE
     if not wpf_panel.available():
         raise unittest.SkipTest("no ui/runtime - run .\\build_ui.cmd first")
     try:
@@ -216,6 +229,12 @@ def setUpModule():
     _SAVED_DIRS = (app_mod.PRESET_DIR, app_mod.BUILTIN_PRESET_DIR)
     app_mod.PRESET_DIR, app_mod.BUILTIN_PRESET_DIR = user, builtin
 
+    # Remembered state goes to the temp tree too. _remember_model writes on
+    # every engine start, and a test that leaves _state.json in the checkout
+    # would change what the NEXT real launch starts on.
+    _SAVED_STATE = settings_mod.STATE_FILE
+    settings_mod.STATE_FILE = os.path.join(TMP, "_state.json")
+
     APP = _make_app_class()()
     PANEL = wpf_panel.Panel(APP, dark=APP._panel_dark())
     PANEL.start()
@@ -237,6 +256,8 @@ def tearDownModule():
         import app as app_mod
 
         app_mod.PRESET_DIR, app_mod.BUILTIN_PRESET_DIR = _SAVED_DIRS
+    if _SAVED_STATE is not None:
+        settings_mod.STATE_FILE = _SAVED_STATE
     if TMP is not None:
         shutil.rmtree(TMP, ignore_errors=True)
 
@@ -266,6 +287,41 @@ class Presets(unittest.TestCase):
         self.assertEqual(message, "Buffer length: 99 is above the maximum 30")
         self.assertEqual(_field("buffer", "NumberValue"), before)
         self.assertEqual(names, ["Bad", "Speech"])
+
+    def test_your_own_saved_profile_loads_without_an_error_toast(self):
+        # Reported from a real session: loading "aaa" said
+        #   One setting in 'aaa' was refused
+        #   'wpf' can only be set when starting the program or from the
+        #   desktop panel.
+        # every single time. Nobody had put `wpf` in that preset - save_preset
+        # stored every non-default value, and `wpf` is true whenever the panel
+        # is running, so saving a profile FROM the panel always captured it and
+        # loading it always refused it. The refusal was correct and the preset
+        # was wrong.
+        #
+        # Written and removed inside the test rather than added to the shared
+        # fixture: every other test here asserts the dropdown's exact contents,
+        # so a permanent extra file rewrites six unrelated expectations.
+        import app as app_mod
+        path = os.path.join(app_mod.PRESET_DIR, "Legacy.json")
+        with open(path, "w") as fh:
+            json.dump({"translate": True, "wpf": True}, fh)
+        try:
+            toasts, names = _preset_call("LoadPreset", "Legacy")
+            applied = _field("translate", "BoolValue")
+        finally:
+            # Remove the file AND resync the dropdown from it. The panel's
+            # Presets collection is refilled from each ack, so leaving it
+            # holding a name whose file is gone makes the NEXT test see a
+            # Remove on a collection it asserts never moves - which is a
+            # failure in someone else's test, caused here.
+            os.remove(path)
+            _preset_call("LoadPreset", "Speech")
+
+        self.assertEqual(toasts, [("Success", "Preset loaded", "Legacy")])
+        self.assertTrue(applied,
+                        "the profile's real settings must still apply")
+        self.assertIn("Legacy", names)
 
     def test_loading_a_preset_does_not_disturb_the_dropdown(self):
         # The selection used to vanish the moment a load SUCCEEDED. app.py
@@ -380,6 +436,120 @@ class Theme(unittest.TestCase):
     def test_the_browser_cannot_move_it(self):
         self.assertIn("wpf_theme", settings_mod.REMOTE_LOCKED)
         self.assertTrue(_field("wpf_theme", "LocalOnly"))
+
+
+class EngineModel(unittest.TestCase):
+    """server_model: one picker, and the choice survives the next launch."""
+
+    @staticmethod
+    def _ggml():
+        return [m["name"] for m in APP._list_models()["ggml"]]
+
+    @staticmethod
+    def _choices():
+        return on_ui(lambda: [(c.Value, c.Available) for c in
+                              main_vm().SettingsPane.Field("server_model").Choices])
+
+    def test_the_field_is_a_picker_over_the_bin_files_in_models(self):
+        # Found by its dynamic source, not by key: `model` is special-cased by
+        # name in FieldTemplateSelector because it is declared a path, and
+        # server_model exists partly to show that a new list does not have to
+        # be. If this ever needs a name test instead, the declaration drifted.
+        self.assertEqual(_field("server_model", "ChoiceSource"), "ggml_models")
+        self.assertEqual([v for v, available in self._choices() if available],
+                         self._ggml())
+
+    def test_a_configured_model_that_is_not_there_stays_visible(self):
+        # The engine's list here deliberately does not contain the configured
+        # model, which is the "remembered it, then deleted or renamed the file"
+        # case. The name has to stay in the dropdown and be marked, because the
+        # alternative is a picker quietly showing a different model than the
+        # one the setting holds - and then starting on that.
+        current = APP.settings["server_model"]
+        self.assertNotIn(current, self._ggml())
+        self.assertIn((current, False), self._choices())
+
+    def test_starting_on_a_model_remembers_it_and_the_panel_follows(self):
+        names = self._ggml()
+        if not names:
+            self.skipTest("the engine stand-in served no models")
+        before = APP.settings["server_model"]
+        pick = next(n for n in names if n != before)
+        try:
+            APP._remember_model(pick)
+            self.assertEqual(APP.settings["server_model"], pick)
+            # The file is what the next launch reads, so assert the file and
+            # not just the dict - _remember_model updating one without the
+            # other is exactly the bug this pair exists to catch.
+            self.assertEqual(settings_mod.load_state(), {"server_model": pick})
+            # on_ui is Background priority, so this read queues behind the
+            # notify _remember_model posted; no sleep needed.
+            self.assertEqual(_field("server_model", "TextValue"), pick)
+        finally:
+            APP._remember_model(before)
+
+    def test_the_tab_opens_on_the_configured_model_until_a_human_picks(self):
+        # One test and not two on purpose. "Has anyone picked yet" is sticky
+        # for the life of the window - that is the point of it - so a separate
+        # test that picks would decide this one's result through whichever ran
+        # first. The ordering IS the behaviour, so it is asserted in order.
+        served = APP._engine_status()["model"]
+        self.assertTrue(served)
+
+        # Opens on the configured model, not the "(the launcher's default)"
+        # entry. MainVm.Hello refreshes the list TWICE - ApplyModels, then
+        # Apply - and only the second carries the configured name, so the
+        # first used to win and the tab advertised a model the engine was not
+        # going to start on.
+        self.assertEqual(
+            on_ui(lambda: main_vm().Engine.SelectedModel.Value), served)
+
+        def pick_default():
+            engine = main_vm().Engine
+            engine.SelectedModel = engine.Models[0]     # the launcher default
+            return engine.SelectedModel.Value
+
+        def refresh_then_read():
+            engine = main_vm().Engine
+            engine.Apply(json.dumps(APP._engine_status()))
+            return engine.SelectedModel.Value
+
+        self.assertEqual(on_ui(pick_default), "")
+        # The configured model must NOT reclaim the box now. Choosing the
+        # launcher's default deliberately looks identical BY VALUE to an
+        # untouched dropdown - both are "" - so this is the case that proves
+        # the two are told apart by reference instead.
+        self.assertEqual(on_ui(refresh_then_read), "")
+
+    def test_the_launcher_default_is_not_remembered(self):
+        before = APP.settings["server_model"]
+        APP._remember_model("")
+        self.assertEqual(APP.settings["server_model"], before)
+
+    def test_a_remembered_model_that_is_gone_does_not_stop_the_server(self):
+        before = APP.settings["server_model"]
+        del LOGS[:]
+        try:
+            APP.settings["server_model"] = "ggml-not-here.bin"
+            # "" means "let start_whisper_server.cmd pick", which is the whole
+            # point: a model deleted since the last run must not turn into a
+            # boot that refuses to start the engine at all. _engine_start's own
+            # check DOES refuse an unknown name, because there the name came
+            # from a browser; the two callers want opposite things.
+            self.assertEqual(APP._boot_model(), "")
+        finally:
+            APP.settings["server_model"] = before
+        warnings = [m for level, m in LOGS if level == "warn"]
+        self.assertTrue(any("ggml-not-here.bin" in m for m in warnings), LOGS)
+
+        # And the ordinary case still passes the name through.
+        served = self._ggml()
+        if served:
+            APP.settings["server_model"] = served[0]
+            try:
+                self.assertEqual(APP._boot_model(), served[0])
+            finally:
+                APP.settings["server_model"] = before
 
 
 if __name__ == "__main__":

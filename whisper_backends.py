@@ -40,6 +40,7 @@ Usage:
 """
 
 import io
+import os
 import struct
 import time
 import wave
@@ -887,13 +888,90 @@ def _temperature_ladder(opts):
 
 
 # -------------------------------
-# faster-whisper CPU fallback
+# faster-whisper CPU / CUDA fallback
 # -------------------------------
+#: What "auto" precision means per device. int8 is the fastest thing a CPU can
+#: do; float16 is what the tensor cores want. Anything else the user chose is
+#: passed straight through - CTranslate2 validates it and says so itself.
+_COMPUTE_DEFAULTS = {"cpu": "int8", "cuda": "float16"}
+
+
+def _compute_for(device, compute_type):
+    if compute_type and compute_type != "auto":
+        return compute_type
+    return _COMPUTE_DEFAULTS.get(device, "int8")
+
+
+_cuda_path_added = False
+
+
+def _add_cuda_runtime_to_path():
+    """
+    Put the pip-installed CUDA libraries where CTranslate2 will find them.
+
+    Needed because of a gap nothing else papers over. `pip install
+    nvidia-cublas-cu12` puts cublas64_12.dll in
+    site-packages\\nvidia\\cublas\\bin, which is on nobody's search path, and
+    since Python 3.8 the interpreter no longer adds PATH to the DLL search
+    order for extension modules. The symptom is a model that LOADS on cuda and
+    then dies on the first inference with "Library cublas64_12.dll is not
+    found or cannot be loaded" - measured here, so the load is not proof of
+    anything.
+
+    os.add_dll_directory() is the modern answer and does NOT work for this:
+    it only affects LoadLibraryEx calls that pass the search-path flags, and
+    CTranslate2 asks for the library by bare name. That resolves through the
+    classic order, which reads PATH. So PATH is what has to change - measured
+    both ways rather than assumed.
+
+    Harmless when the wheels are absent: the glob finds nothing.
+    """
+    global _cuda_path_added
+    if _cuda_path_added or os.name != "nt":
+        return
+    _cuda_path_added = True
+    import glob
+    import sysconfig
+    root = os.path.join(sysconfig.get_paths()["purelib"], "nvidia")
+    found = sorted(glob.glob(os.path.join(root, "*", "bin")))
+    if found:
+        os.environ["PATH"] = (os.pathsep.join(found) + os.pathsep
+                              + os.environ.get("PATH", ""))
+
+
+def _local_load_error(model_path, problems):
+    """
+    Why the model would not load, in a form somebody can act on.
+
+    Worth the extra code because the raw CTranslate2 message for the common
+    case is "Library cublas64_12.dll is not found or cannot be loaded", which
+    names a file that was never supposed to be there and gives no hint that
+    the fix is two pip packages. CTranslate2 is built against CUDA 12 and a
+    CUDA 13 toolkit ships cublas64_13.dll, so having the toolkit installed
+    does not help - the two are not interchangeable.
+    """
+    lines = []
+    for dev, err in problems:
+        text = str(err)
+        lines.append("{0}: {1}".format(dev, text))
+        if dev == "cuda" and ("cublas" in text or "cudnn" in text
+                              or "cuda" in text.lower()):
+            lines.append(
+                "        The CUDA 12 runtime CTranslate2 needs is missing. "
+                "Installing the CUDA Toolkit does not supply it - install "
+                "the libraries themselves:")
+            lines.append(
+                "        pip install nvidia-cublas-cu12 \"nvidia-cudnn-cu12==9.*\"")
+    return "Could not load faster-whisper model at '{0}'.\n    {1}".format(
+        model_path, "\n    ".join(lines))
+
+
+
 class LocalBackend(object):
-    name = "faster-whisper (CPU int8)"
     active_name = "local"       # see AutoBackend.active_name
 
-    def __init__(self, model_path, language=None):
+    def __init__(self, model_path, language=None, device="cpu",
+                 compute_type="auto"):
         self.language = normalize_language(language)
         self.last_detection = _no_detection()
         try:
@@ -903,20 +981,35 @@ class LocalBackend(object):
                 "faster-whisper is not installed. "
                 "Install it with: pip install faster-whisper"
             )
-        try:
-            # compute_type and cpu_threads are two separate arguments. Merged
-            # into one string - compute_type="int8, cpu_threads=4" - every
-            # model load raises: compute_type is a single ctranslate2 enum and
-            # that is not one of its values, so the CPU backend never loaded
-            # and AutoBackend had nothing left to fall back to.
-            self.model = WhisperModel(model_path, device="cpu",
-                                      compute_type="int8", cpu_threads=4)
-        except Exception as e:
-            raise BackendError(
-                "Could not load faster-whisper model at '{0}': {1}".format(
-                    model_path, e
-                )
-            )
+
+        # "auto" here is ours, not CTranslate2's: try the GPU, settle for the
+        # CPU. CTranslate2 has a device="auto" of its own, but it RAISES when
+        # it picks cuda and the runtime is missing, which is the one outcome
+        # this fallback cannot afford - see the note on _cpu().
+        order = ["cuda", "cpu"] if device == "auto" else [device]
+        if "cuda" in order:
+            _add_cuda_runtime_to_path()
+        problems = []
+        for dev in order:
+            try:
+                # compute_type and cpu_threads are two separate arguments.
+                # Merged into one string - compute_type="int8, cpu_threads=4" -
+                # every model load raises: compute_type is a single ctranslate2
+                # enum and that is not one of its values, so the CPU backend
+                # never loaded and AutoBackend had nothing left to fall back to.
+                self.model = WhisperModel(
+                    model_path, device=dev,
+                    compute_type=_compute_for(dev, compute_type),
+                    cpu_threads=4)
+            except Exception as e:
+                problems.append((dev, e))
+                continue
+            self.device = dev
+            self.name = "faster-whisper ({0} {1})".format(
+                dev.upper(), _compute_for(dev, compute_type))
+            return
+
+        raise BackendError(_local_load_error(model_path, problems))
 
     def set_language(self, language):
         """
@@ -1070,15 +1163,18 @@ class AutoBackend(object):
     PROBE_INTERVAL_SEC = 60.0
     PROBE_TIMEOUT_SEC = 3.0
 
-    def __init__(self, server_url, model_path, language=None):
+    def __init__(self, server_url, model_path, language=None,
+                 local_device="cpu", local_compute="auto"):
         self.server_url = server_url
         self._model_path = model_path
         # Validated here, before anything expensive is built, so a bad code is
         # a startup error even when the server is down and this constructor
         # goes straight to loading the CPU model.
         self._language = normalize_language(language)
+        self._local_device = local_device
+        self._local_compute = local_compute
         self._local = None          # built on first CPU pass, see _cpu()
-        self._local_error = None    # sticky: set if the CPU model won't load
+        self._local_error = None    # sticky: set if the local model won't load
         self._failures = 0
         self._last_probe = time.monotonic()
         self._served = None         # who answered last, see last_detection
@@ -1152,7 +1248,10 @@ class AutoBackend(object):
         if self._local_error is not None:
             raise self._local_error
         try:
-            self._local = LocalBackend(self._model_path, language=self._language)
+            self._local = LocalBackend(self._model_path,
+                                       language=self._language,
+                                       device=self._local_device,
+                                       compute_type=self._local_compute)
         except BackendError as e:
             # Remember the failure: retrying a missing or broken model would
             # stall the worker for seconds, on every pass, forever.
@@ -1235,12 +1334,20 @@ class AutoBackend(object):
 # -------------------------------
 def create_backend(backend="auto", server_url="http://127.0.0.1:8080",
                    model_path=r"_models\faster-whisper-medium",
-                   language="auto"):
+                   language="auto", local_device="cpu",
+                   local_compute="auto"):
     """
     backend: "auto" | "server" | "local"
-      auto   -> AutoBackend: whisper-server, with CPU fallback and recovery
+      auto   -> AutoBackend: whisper-server, with local fallback and recovery
       server -> whisper-server only; fail loudly if unreachable
-      local  -> faster-whisper CPU only
+      local  -> faster-whisper only
+
+    local_device: "cpu", "cuda", or "auto" (cuda if it loads, else cpu).
+      Defaults to "cpu" because under backend="auto" this is the FALLBACK, and
+      the GPU is the thing that just stopped working. Choosing cuda for
+      backend="local" is a different decision and a reasonable one.
+    local_compute: a CTranslate2 compute type, or "auto" for int8 on the CPU
+      and float16 on CUDA.
 
     language: a Whisper code ("en", "ms", ...) to pin, or "auto" to detect it
       on every request. Pinning is worth it when you know the language:
@@ -1257,9 +1364,12 @@ def create_backend(backend="auto", server_url="http://127.0.0.1:8080",
         print("Backend: {0} @ {1}".format(b.name, server_url))
         return b
     if backend == "local":
-        b = LocalBackend(model_path, language=language)
+        b = LocalBackend(model_path, language=language, device=local_device,
+                         compute_type=local_compute)
         print("Backend: {0}".format(b.name))
         return b
     if backend == "auto":
-        return AutoBackend(server_url, model_path, language=language)
+        return AutoBackend(server_url, model_path, language=language,
+                           local_device=local_device,
+                           local_compute=local_compute)
     raise BackendError("Unknown backend '{0}' (use auto|server|local)".format(backend))

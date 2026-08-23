@@ -11,7 +11,8 @@ using LiveTranscription.Ui.ViewModels;
 namespace LiveTranscription.Ui.Settings;
 
 /// <summary>
-/// The whole settings pane: 8 groups, 60 fields, generated from the schema.
+/// The whole settings pane: 8 groups, every field settings.py declares,
+/// generated from the schema.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -337,31 +338,78 @@ public sealed class SettingsVm : ViewModelBase
     }
 
     /// <summary>
-    /// Fill the faster-whisper model list.
+    /// Fill both model lists: faster-whisper folders and GGML files.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <c>model</c> is declared in settings.py as a <c>path</c>, because on the
     /// command line it is one. In a panel it is a picker over what is actually
     /// in _models, and this is the one place a key is special-cased by name.
-    /// webui/app.js:381 does the same thing for the same reason; the two
-    /// panels disagreeing about what the model field IS would be worse than
-    /// the special case.
+    /// webui/app.js does the same thing for the same reason; the two panels
+    /// disagreeing about what the model field IS would be worse than the
+    /// special case.
+    /// </para>
+    /// <para>
+    /// <c>server_model</c> needs no such exception: it is declared a
+    /// <c>choice</c> with the dynamic source <c>ggml_models</c>, so it takes
+    /// the choice template on its own and is found here by that source rather
+    /// than by name. New dynamic lists should follow it, not <c>model</c>.
+    /// </para>
     /// </remarks>
     public void SetModels(string modelsJson)
     {
         _models = Doc.Parse(modelsJson);
-        if (!_byKey.TryGetValue("model", out FieldVm? model))
+
+        if (_byKey.TryGetValue("model", out FieldVm? model))
         {
-            return;
+            var folders = new List<ChoiceVm>();
+            foreach (Doc m in _models["faster_whisper"].Items())
+            {
+                folders.Add(new ChoiceVm(m["path"].Str(), m["name"].Str(m["path"].Str())));
+            }
+
+            model.SetDynamicChoices(folders);
         }
 
-        var list = new List<ChoiceVm>();
-        foreach (Doc m in _models["faster_whisper"].Items())
+        FieldVm? serverModel = FieldWithSource("ggml_models");
+        if (serverModel is not null)
         {
-            list.Add(new ChoiceVm(m["path"].Str(), m["name"].Str(m["path"].Str())));
+            var files = new List<ChoiceVm>();
+            foreach (Doc m in _models["ggml"].Items())
+            {
+                string name = m["name"].Str();
+                double size = m["size_mb"].Num();
+
+                // The size is in the label because for this one setting the
+                // number IS the decision: when the perf line says the GPU
+                // cannot hold real time, a smaller file is the fix.
+                files.Add(new ChoiceVm(
+                    name,
+                    size > 0
+                        ? string.Format(CultureInfo.InvariantCulture, "{0}   ({1:0} MB)", name, size)
+                        : name));
+            }
+
+            // SetDynamicChoices re-adds the current value as unavailable if it
+            // is not in the list, which is what keeps a remembered model that
+            // has since been deleted visible rather than silently swapped for
+            // whichever file happens to sort first.
+            serverModel.SetDynamicChoices(files);
+        }
+    }
+
+    /// <summary>The first field declaring <paramref name="source"/>, or null.</summary>
+    private FieldVm? FieldWithSource(string source)
+    {
+        foreach (FieldVm f in _byKey.Values)
+        {
+            if (string.Equals(f.ChoiceSource, source, StringComparison.Ordinal))
+            {
+                return f;
+            }
         }
 
-        model.SetDynamicChoices(list);
+        return null;
     }
 
     public void SetPresets(string presetsJson)
@@ -579,6 +627,9 @@ public sealed class SettingsVm : ViewModelBase
             "overlay" => f.Label + ": the overlay is being restyled.",
             "restart" => f.Label + ": this one only takes effect when the "
                          + "program is started again.",
+            "engine" => f.Label + ": whisper-server reads this once, at "
+                        + "startup - press Restart on the Engine tab to load "
+                        + "it now.",
             _ => "",
         };
 

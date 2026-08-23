@@ -13,10 +13,12 @@ arguments are written down so none of it has to be re-derived.
 
 ## Remaining work
 
-Nothing is open. The four items this section carried on 2026-08-23 were
-closed the same day — three done, one decided — and step 10 records how.
-Anything new goes here first, with what "done" looks like, before it goes
-anywhere else in this file.
+**Nothing open.** The five items this section has carried — four on 2026-08-23
+morning, one opened that evening while fixing `REMOTE_LOCKED` — are all closed:
+four done, one decided. Step 10 records the first four. The last was the
+untrusted-read-path gap, closed the same evening by `safe_paths.py` and pinned
+by `tests/test_safe_paths.py`. Anything new goes here first, with what "done"
+looks like, before it goes anywhere else in this file.
 
 ---
 
@@ -488,13 +490,18 @@ on Windows 10 and over RDP) defeats it entirely. The agreed target is
 charcoal + cyan + Fluent depth. Ambient glows, if wanted, are `Ellipse` +
 `RadialGradientBrush` — never `BlurEffect` at a large radius.
 
-**`REMOTE_LOCKED` does not apply here.** The web_* settings are stripped from
+**`REMOTE_LOCKED` does not apply here.** Those settings are stripped from
 browser patches because that rule is enforced by transport, not by locality.
 This panel is local by construction, so `ApplySettings` passes `remote=False`
 and they stay editable — a desktop panel forbidden from configuring the
 listener would be obeying a rule written for a different threat. (`wpf`
 itself joined REMOTE_LOCKED for the mirror-image reason: whether a window
 opens on the host machine belongs to whoever is sitting at it.)
+
+> Written when the list was the five `web_*` keys. It has since grown twice —
+> `wpf` / `wpf_theme`, then `model` / `vad_model` / `output` on 2026-08-23 —
+> which is why nothing here quotes a count any more. The reasoning above is
+> unchanged: everything on the list stays editable in this panel.
 
 **Closing the window is not exiting the program.** The window closing is the
 front end going away — exactly a closed browser tab — and the engine keeps

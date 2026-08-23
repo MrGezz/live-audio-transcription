@@ -15,7 +15,8 @@ namespace LiveTranscription.Ui.Settings;
 /// <remarks>
 /// <para>
 /// Nothing about any particular setting is written down here or in the XAML.
-/// The pane is 60 fields across 8 groups and every one of them is this class
+/// The pane is every field settings.py declares, across 8 groups, and every
+/// one of them is this class
 /// with different strings in it, which is the whole point: adding a
 /// <c>Field(...)</c> to settings.py has to make a control appear with no C#
 /// and no XAML edit, or the generated pane is not generated at all - it is
@@ -98,7 +99,11 @@ public sealed class FieldVm : ViewModelBase
     public JsonElement Default { get; }
     public IReadOnlyDictionary<string, JsonElement[]> ShowIf { get; }
 
-    /// <summary>"devices" or "languages", or "" when the choices are literal.</summary>
+    /// <summary>
+    /// "devices", "languages" or "ggml_models", or "" when the choices are a
+    /// literal list. Not an enum on purpose - the string comes from the Python
+    /// schema, and each UI resolves the ones it knows.
+    /// </summary>
     public string ChoiceSource { get; } = "";
 
     /// <summary>
@@ -107,13 +112,15 @@ public sealed class FieldVm : ViewModelBase
     /// </summary>
     /// <remarks>
     /// It stays EDITABLE here. That rule is enforced by transport, not by
-    /// locality: the five web_* settings are stripped from browser patches
-    /// because a listener should not be reconfigurable through itself, and
-    /// this panel is local by construction. A desktop panel forbidden from
-    /// configuring the listener would be obeying a rule written for a
-    /// different threat. The flag exists only so the row can SAY that it is
-    /// one of the five, which is otherwise invisible and surprising when the
-    /// same field greys out in the other panel.
+    /// locality: those settings are stripped from browser patches - a listener
+    /// should not be reconfigurable through itself, and a path a browser names
+    /// should not become a fetch, a native parser's input or a file write -
+    /// while this panel is local by construction. A desktop panel forbidden
+    /// from configuring the listener, or from pointing the model at a folder
+    /// on its own disk, would be obeying a rule written for a different
+    /// threat. The flag exists only so the row can SAY that it is one of them,
+    /// which is otherwise invisible and surprising when the same field greys
+    /// out in the other panel.
     /// </remarks>
     public bool LocalOnly { get; set; }
 

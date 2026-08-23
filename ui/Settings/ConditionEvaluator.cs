@@ -8,7 +8,7 @@ namespace LiveTranscription.Ui.Settings;
 /// </summary>
 /// <remarks>
 /// <para>
-/// 26 of the 60 fields carry one, and their values are type-heterogeneous:
+/// Most fields carry one, and their values are type-heterogeneous:
 /// <c>{"vad": [true]}</c> is a boolean, <c>{"capture": ["file"]}</c> is a
 /// string, and both arrive as <see cref="JsonElement"/>. That is the whole
 /// difficulty. The obvious implementation compares

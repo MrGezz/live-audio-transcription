@@ -44,6 +44,12 @@ public sealed class EngineVm : ViewModelBase
     private bool _canStart;
     private string _backend = "";
     private ChoiceVm? _selectedModel;
+
+    /// <summary>True once a human has chosen a model, not merely once one is set.</summary>
+    private bool _pickedByUser;
+
+    /// <summary>The item SetModels itself last selected, by reference.</summary>
+    private ChoiceVm? _lastAssigned;
     private string _modelsDir = "";
 
     public EngineVm(IEngineBridge bridge, Func<bool> isIdle,
@@ -196,7 +202,7 @@ public sealed class EngineVm : ViewModelBase
         // people to press Start, which then fails because the port is taken.
         State = Reachable ? "running" : Pid is not null ? "occupied" : "not running";
 
-        SetModels(e["models"], e["modelsDir"].Str());
+        SetModels(e["models"], e["modelsDir"].Str(), e["model"].Str());
         RaiseGates();
     }
 
@@ -207,11 +213,28 @@ public sealed class EngineVm : ViewModelBase
         SetModels(m["ggml"], m["dir"].Str());
     }
 
-    private void SetModels(Doc ggml, string dir)
+    private void SetModels(Doc ggml, string dir, string configured = "")
     {
         if (dir.Length > 0)
         {
             ModelsDir = dir;
+        }
+
+        // Has a HUMAN chosen, or is this just the value we put there ourselves?
+        // Not the same question, and the difference decides whether the
+        // configured model may fill the box. Two things make it awkward: the
+        // launcher-default entry IS the empty value, so an untouched dropdown
+        // and a deliberate "(the launcher's default)" both leave keep empty;
+        // and the ComboBox's two-way binding writes SelectedModel back while
+        // the tab loads, so a flag set in the setter says "the user picked"
+        // when nobody has touched it. Reference identity answers it cleanly -
+        // the binding echoes back the very instance we assigned, while a real
+        // pick is a different item out of the list. Sticky once observed,
+        // because the refresh after a pick assigns that same item back.
+        if (_selectedModel is not null
+            && !ReferenceEquals(_selectedModel, _lastAssigned))
+        {
+            _pickedByUser = true;
         }
 
         string keep = _selectedModel?.Value ?? "";
@@ -234,16 +257,29 @@ public sealed class EngineVm : ViewModelBase
 
         Models.Clear();
         ChoiceVm? restored = null;
+        ChoiceVm? preferred = null;
         foreach (ChoiceVm c in fresh)
         {
             Models.Add(c);
-            if (string.Equals(c.Value, keep, StringComparison.Ordinal))
+            if (_pickedByUser && string.Equals(c.Value, keep, StringComparison.Ordinal))
             {
                 restored = c;
             }
+
+            if (configured.Length > 0
+                && string.Equals(c.Value, configured, StringComparison.Ordinal))
+            {
+                preferred = c;
+            }
         }
 
-        SelectedModel = restored ?? Models[0];
+        // The human's own choice first, then the model the engine will actually
+        // start with, and only then the launcher default. Opening on
+        // settings.server_model is the point: it is remembered across launches,
+        // so this tab now shows what will really happen instead of an empty
+        // entry that quietly meant "the smallest file in _models".
+        _lastAssigned = restored ?? preferred ?? Models[0];
+        SelectedModel = _lastAssigned;
     }
 
     /// <summary>

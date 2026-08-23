@@ -46,6 +46,8 @@ import wave
 
 import numpy as np
 
+import safe_paths
+
 SAMPLERATE = 16000          # Whisper's input rate; everything resamples to it
 
 # ~128 ms per block. Small enough that the worker's buffer fills smoothly,
@@ -641,12 +643,25 @@ class FileSource(AudioSource):
 
     kind = "file"
 
-    def __init__(self, settings, on_audio, on_log=None):
+    def __init__(self, settings, on_audio, on_log=None,
+                 trusted=False, roots=None):
         AudioSource.__init__(self, on_audio, on_log)
         path = str(settings.get("file_path") or "").strip()
         if not path:
             raise AudioSourceError(
                 "Capture is set to 'file' but no WAV file was given.")
+        # One of the two wave.open sinks safe_paths guards, and the one a
+        # settings patch reaches. Untrusted by default: `trusted` says the
+        # value came from the CLI or the desktop panel rather than off the
+        # socket, and only Pipeline knows which - see Pipeline._untrusted.
+        try:
+            path = safe_paths.check_read_path(path, trusted=trusted,
+                                              roots=roots)
+        except safe_paths.PathRefused as e:
+            # Re-raised as the error type create_source promises. A ValueError
+            # out of a constructor would slip past every caller's "could not
+            # capture" handling and surface as a crash instead of a message.
+            raise AudioSourceError(str(e))
         try:
             wav = wave.open(path, "rb")
         except (OSError, EOFError, wave.Error) as e:
@@ -758,13 +773,19 @@ _SOURCES = {
 }
 
 
-def create_source(settings, on_audio, on_log=None):
+def create_source(settings, on_audio, on_log=None, trusted=False, roots=None):
     """
     The AudioSource settings["capture"] asks for, not yet started.
 
     Raises AudioSourceError when it cannot be built at all, so the caller can
     say why in one line and offer another mode. Once start() has been called,
     every further problem arrives through on_log instead.
+
+    `trusted` and `roots` are the safe_paths policy for whoever chose
+    settings["file_path"]. They reach FileSource only, because it is the only
+    mode that names a file - a device index cannot be pointed at a network
+    share, and handing the kwargs to a source whose __init__ does not take
+    them would be a TypeError the moment somebody switched capture mode.
     """
     capture = str(settings.get("capture") or "loopback")
     cls = _SOURCES.get(capture)
@@ -772,4 +793,6 @@ def create_source(settings, on_audio, on_log=None):
         raise AudioSourceError(
             "Unknown capture mode '{0}' - expected one of {1}.".format(
                 capture, ", ".join(sorted(_SOURCES))))
+    if cls is FileSource:
+        return cls(settings, on_audio, on_log, trusted=trusted, roots=roots)
     return cls(settings, on_audio, on_log)

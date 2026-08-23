@@ -126,7 +126,12 @@ class App(object):
         # it has fallen back to CPU for the next minute (invariant 4). This
         # waits for a real answer rather than a fixed sleep.
         if self._start_server_at_boot:
-            self._engine_start({})
+            # The remembered/configured model, not {}. Passing nothing let the
+            # .cmd fall back to its own default, so every launch silently
+            # reverted to the smallest file in _models no matter what had been
+            # chosen in the panel - and on a CUDA build that default is also
+            # the slowest of the useful models, not just the least accurate.
+            self._engine_start({"model": self._boot_model()})
         try:
             self.pipeline.start()
         except Exception as e:
@@ -648,13 +653,23 @@ class App(object):
             # joining close belongs to shutdown(), on the main thread.
             panel.request_close()
 
-    def _run_benchmark(self, args):
+    def _run_benchmark(self, args, trusted=False):
+        """
+        Start a benchmark. `args["wav"]` is a path chosen by whoever called.
+
+        Untrusted by default because the socket is the caller this default is
+        for: _command reaches here with args straight off the wire, and a
+        command is not a settings patch, so REMOTE_LOCKED never sees this one.
+        wpf_panel.RunBenchmark passes trusted=True - it is the same local panel
+        that gets remote=False on apply(), for the same reason.
+        """
         buffers = args.get("buffers") or [4, 8, 16, 24]
         wav = args.get("wav") or None
         reps = int(args.get("reps", 2))
         threading.Thread(
             target=self.pipeline.benchmark,
-            kwargs={"buffers": buffers, "wav": wav, "reps": reps},
+            kwargs={"buffers": buffers, "wav": wav, "reps": reps,
+                    "trusted": trusted},
             name="benchmark", daemon=True).start()
 
     # -- transcript export ------------------------------------------------
@@ -765,6 +780,14 @@ class App(object):
             return {"error": "Could not read preset: {0}".format(e),
                     "presets": self._list_presets()}
         data.pop("_comment", None)
+        # Drop the launch-time keys silently instead of letting apply() refuse
+        # them. Presets written before save_preset excluded these carry
+        # `wpf: true` purely because the desktop panel happened to be running
+        # when they were saved, so the refusal was reporting the user's own
+        # profile as suspicious for a value they never chose. Nothing is lost:
+        # these keys cannot be applied from here anyway.
+        for key in settings_mod.REMOTE_LOCKED:
+            data.pop(key, None)
         changed, errors = self.pipeline.apply(data, remote=True)
         # The list rides on EVERY return, including the error shapes. The
         # desktop panel refills its dropdown from this ack - SettingsVm's own
@@ -990,6 +1013,7 @@ class App(object):
             "launched": self._server_proc is not None,
             "canStart": os.path.exists(SERVER_CMD),
             "backend": self.settings.get("backend"),
+            "model": self.settings.get("server_model"),
             "models": self._list_models()["ggml"],
         }
 
@@ -1118,6 +1142,56 @@ class App(object):
         self.pipeline.log("info", "{0} (PID {1}) stopped; port {2} is free."
                           .format(image, pid, port))
 
+    def _boot_model(self):
+        """
+        The configured GGML model, or "" if it is not actually in _models.
+
+        Separate from _engine_start's check, which REFUSES an unknown name,
+        because the two callers want opposite things from the same mistake. A
+        browser naming a file that is not there is a caller error worth
+        rejecting; a remembered or preset name that has since been deleted or
+        renamed must not be able to stop the server from starting at boot. So
+        this one downgrades to the launcher's own default and says why, and
+        start_whisper_server.cmd - which owns the "here is what IS in _models"
+        listing - gets to be the thing that explains it.
+        """
+        want = os.path.basename(str(self.settings.get("server_model", "")))
+        if not want:
+            return ""
+        if want in [m["name"] for m in self._list_models()["ggml"]]:
+            return want
+        self.pipeline.log("warn",
+                          "Configured GPU model '{0}' is not in _models; "
+                          "starting on the launcher's default instead."
+                          .format(want))
+        return ""
+
+    def _remember_model(self, model):
+        """
+        Make `model` the one the next launch starts on.
+
+        Empty is not remembered. "" means "let start_whisper_server.cmd pick",
+        which is a legitimate thing to ask for once but not a value the setting
+        can hold: server_model's choices are the files in _models, and writing
+        "" would put the field into a state its own dropdown cannot show. So an
+        explicit "(the launcher's default)" runs on the default and leaves the
+        remembered name alone.
+
+        The settings dict is updated as well as the file, so both panels'
+        Settings tab follows the Engine tab without a round trip - they render
+        from the same schema, and a value they were never told about would sit
+        there stale until the next reconnect.
+        """
+        if not model or model == self.settings.get("server_model"):
+            return
+        self.settings["server_model"] = model
+        if not settings_mod.save_state(self.settings):
+            self.pipeline.log("warn", "Could not write {0}; this model will "
+                                      "not be remembered for next launch."
+                              .format(os.path.basename(
+                                  settings_mod.STATE_FILE)))
+        self._notify("settings", self.settings)
+
     def _engine_start(self, args):
         """
         Start the GPU server, then wait until it actually answers.
@@ -1127,6 +1201,9 @@ class App(object):
         it is checked against the real listing rather than trusted. The panel
         can be reachable from the network, and "run this batch file with these
         arguments" is not something a browser gets to say freely.
+
+        A model that survives that check becomes the remembered one, so the
+        next launch starts on it - see _remember_model.
         """
         if not os.path.exists(SERVER_CMD):
             self.pipeline.log("error", "{0} is not next to app.py.".format(
@@ -1205,6 +1282,12 @@ class App(object):
         self.pipeline.log("info", "whisper-server starting with {0} - its log "
                                   "is below.".format(
                                       model or "the default model"))
+        # Remembered HERE, on the launch, rather than further down once the
+        # server answers. The models worth remembering are the big ones, and a
+        # large one is exactly what fails to answer inside
+        # ENGINE_START_WAIT_SEC - so keying this off "reachable" would forget
+        # precisely the choices this exists to keep.
+        self._remember_model(model)
         deadline = time.monotonic() + self.ENGINE_START_WAIT_SEC
         while time.monotonic() < deadline:
             proc = self._server_proc

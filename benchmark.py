@@ -33,6 +33,7 @@ import wave
 
 import numpy as np
 
+import safe_paths
 from whisper_backends import create_backend, BackendError, SAMPLERATE
 
 # Whisper pads every window to 30 s. Past that, whisper.cpp splits the audio
@@ -66,7 +67,15 @@ def parse_args():
     p.add_argument("--server-url", type=str, default="http://127.0.0.1:8080",
                    help="whisper-server URL")
     p.add_argument("--model", type=str, default=r"_models\faster-whisper-medium",
-                   help="faster-whisper model path (local/CPU backend only)")
+                   help="faster-whisper model path (local backend only)")
+    p.add_argument("--local-device", type=str, default="cpu",
+                   choices=["cpu", "cuda", "auto"],
+                   help="Where the faster-whisper backend runs (default cpu). "
+                        "cuda needs the CUDA 12 runtime CTranslate2 is built "
+                        "against, which the CUDA Toolkit does not supply")
+    p.add_argument("--local-compute", type=str, default="auto",
+                   help="CTranslate2 compute type, or auto for int8 on the "
+                        "CPU and float16 on CUDA")
     p.add_argument("--headroom", type=float, default=1.5,
                    help="Safety factor applied to measured latency when recommending "
                         "--slide (default 1.5). Benchmarks run on an idle machine; live "
@@ -80,8 +89,17 @@ def parse_args():
     return p.parse_args()
 
 
-def load_wav(path):
-    """Read a WAV to float32 mono 16 kHz, the format the backends expect."""
+def load_wav(path, trusted=False, roots=None):
+    """
+    Read a WAV to float32 mono 16 kHz, the format the backends expect.
+
+    One of the two sinks safe_paths guards, and the one a settings lock could
+    never have reached: the benchmark COMMAND carries this path straight off
+    the socket, and a command is not a settings patch. Untrusted by default so
+    that a new caller has to say out loud that it is not.
+    """
+    path = safe_paths.check_read_path(path, trusted=trusted, roots=roots,
+                                      what="benchmark WAV")
     wf = wave.open(path, "rb")
     try:
         if wf.getsampwidth() != 2:
@@ -196,7 +214,10 @@ def main():
         raise SystemExit("--reps must be at least 1")
 
     if args.wav:
-        source = load_wav(args.wav)
+        # trusted: --wav came from the command line, so the person naming the
+        # file is the person running the process. Confining THEM to a folder
+        # would be enforcing a rule written for the browser.
+        source = load_wav(args.wav, trusted=True)
         audio_desc = "{0} ({1:.1f}s of real audio, tiled as needed)".format(
             args.wav, len(source) / float(SAMPLERATE))
         synthetic = False
@@ -207,7 +228,9 @@ def main():
 
     try:
         backend = create_backend(args.backend, server_url=args.server_url,
-                                 model_path=args.model, language=args.language)
+                                 model_path=args.model, language=args.language,
+                                 local_device=args.local_device,
+                                 local_compute=args.local_compute)
     except BackendError as e:
         raise SystemExit("Backend error: {0}".format(e))
 

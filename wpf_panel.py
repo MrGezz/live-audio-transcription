@@ -234,10 +234,13 @@ def _bridge_class():
 
         def ApplySettings(self, patch_json):
             patch = json.loads(patch_json) if patch_json else {}
-            # remote=False: this panel is local by construction, so the five
-            # REMOTE_LOCKED settings are editable here. That is the point -
-            # a desktop panel forbidden from configuring the listener would be
-            # obeying a rule written for a different threat.
+            # remote=False: this panel is local by construction, so every
+            # REMOTE_LOCKED setting is editable here. That is the point - a
+            # desktop panel forbidden from configuring the listener, or from
+            # pointing the model at a folder on its own disk, would be obeying
+            # a rule written for a different threat. Deliberately not a count:
+            # the list has grown twice (wpf_theme, then the three path keys)
+            # and a number here would have been wrong both times.
             changed, errors = self._app.pipeline.apply(patch, remote=False)
             return json.dumps({"changed": changed, "errors": errors})
 
@@ -318,7 +321,12 @@ def _bridge_class():
             # _run_benchmark spawns the thread and returns nothing; the bool
             # here is "was it started", and everything after arrives as
             # benchmark events.
-            self._app._run_benchmark(args)
+            #
+            # trusted=True for the same reason ApplySettings passes
+            # remote=False: this panel is local by construction, and a wav path
+            # it names was named by the person at the keyboard. The socket path
+            # into the same method takes the default.
+            self._app._run_benchmark(args, trusted=True)
             return True
 
     _BRIDGE_CLASS = EngineBridge

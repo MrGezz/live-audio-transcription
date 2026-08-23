@@ -192,10 +192,17 @@ class _SoakApp(object):
                 "faster_whisper": [], "dir": "_models"}
 
     def _engine_status(self):
+        # "model" mirrors app.py's real document: it is what the Engine tab
+        # opens its dropdown on. Named from the stand-in's own list rather
+        # than from settings, so the shot.py screenshots that end up in the
+        # README show a real selection instead of the empty "(the launcher's
+        # default)" entry, which is what this looked like when the key was
+        # missing entirely.
         return {"url": "http://127.0.0.1:8080", "host": "127.0.0.1",
                 "port": 8080, "reachable": True, "pid": 4242,
                 "image": "whisper-server.exe", "ours": True,
                 "launched": False, "canStart": True, "backend": "server",
+                "model": self._list_models()["ggml"][0]["name"],
                 "models": self._list_models()["ggml"]}
 
     def _export_payload(self, fmt):

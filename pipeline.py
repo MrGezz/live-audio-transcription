@@ -37,6 +37,7 @@ import time
 import numpy as np
 
 import audio_sources
+import safe_paths
 import settings as settings_mod
 from buffering import create_strategy
 from speech_gate import SpeechGate
@@ -102,6 +103,13 @@ class Pipeline(object):
         self._pending = {}          # settings patch waiting for the worker
         self._rebuild = set()        # components the patch invalidated
         self._paused = threading.Event()
+
+        # Keys whose CURRENT value arrived over an untrusted channel. The
+        # smallest thing that can answer the only question safe_paths asks -
+        # who chose this path - and it has to be tracked rather than inferred,
+        # because by the time _build_source reads settings["file_path"] the
+        # string looks identical whether the CLI or a browser put it there.
+        self._untrusted = set()
 
         self._history = collections.deque(maxlen=HISTORY_LIMIT)
         self._next_id = 1
@@ -237,6 +245,30 @@ class Pipeline(object):
         self._push_state()
 
     # -- configuration ----------------------------------------------------
+    def _audio_roots(self):
+        """
+        Folders an untrusted caller may read audio from, or None for anywhere.
+
+        This is the one judgement call in the read-path rules, so it is made
+        here where the listener's own settings are, rather than inside
+        safe_paths where it would be a policy with no facts behind it.
+
+        Confining reads to a folder is the only one of those rules that costs a
+        real capability: it stops the owner of the machine pointing the browser
+        panel at a WAV in their music folder, which is a working feature and
+        the common case, because the listener binds 127.0.0.1 and the browser
+        on the other end of it is usually them. So it is charged only once
+        there is genuinely somebody else who could be at the other end - a
+        listener bound anywhere but loopback. The rules that cost nothing (no
+        UNC, no device names, no data streams, .wav only) apply either way.
+        """
+        if not self.settings.get("web"):
+            return None
+        host = str(self.settings.get("web_host") or "").strip().lower()
+        if host in ("", "127.0.0.1", "::1", "localhost"):
+            return None
+        return safe_paths.audio_roots()
+
     def apply(self, patch, remote=False):
         """
         Validate a settings patch and queue it for the worker.
@@ -247,8 +279,22 @@ class Pipeline(object):
         is in flight takes effect up to 3 seconds later, which is the correct
         trade and worth knowing.
 
-        `remote=True` refuses the fields a browser must not be able to move -
-        the model path and the listener itself.
+        `remote=True` refuses the settings.REMOTE_LOCKED fields - the listener
+        itself, whether a window opens on the host machine, and the three paths
+        that are each the only untrusted route to a sink of their kind (`model`
+        to an outbound model fetch, `vad_model` to the native ONNX parser,
+        `output` to the only makedirs+open in the tree).
+
+        The keys are popped HERE, before validate() below, and that ordering is
+        load-bearing rather than tidy: validate() itself touches the filesystem
+        (the capture="file" rule stats file_path), so a check that ran after it
+        would already have done the thing it was refusing.
+
+        Note what this is not: a lock on a settings key is not a lock on a
+        capability. The benchmark COMMAND reaches wave.open with its own wav
+        argument and never comes through here at all - which is why `file_path`
+        is checked for SHAPE here instead of being locked, and why the same
+        check also guards that other door. See safe_paths.
         """
         if not patch:
             return {}, []
@@ -259,8 +305,21 @@ class Pipeline(object):
                 patch = dict(patch)
                 patch.pop(key)
                 errors.append(
-                    "'{0}' can only be set when starting the program, not from "
-                    "the browser.".format(key))
+                    "'{0}' can only be set when starting the program or from "
+                    "the desktop panel.".format(key))
+            # Same position, same reason as the pops above: validate()'s
+            # capture="file" rule stats this value, and on Windows stat-ing a
+            # UNC path IS the outbound authentication being refused. A blank
+            # is left alone - clearing the box is not an attack, and validate
+            # already has the rule for capture="file" with nothing chosen.
+            if str(patch.get("file_path") or "").strip():
+                patch = dict(patch)
+                try:
+                    patch["file_path"] = safe_paths.check_read_path(
+                        patch["file_path"], roots=self._audio_roots())
+                except safe_paths.PathRefused as e:
+                    patch.pop("file_path")
+                    errors.append(str(e))
 
         with self._lock:
             clean, verrors = settings_mod.validate(patch, self.settings)
@@ -272,7 +331,21 @@ class Pipeline(object):
             rebuild = settings_mod.rebuilds_for(changed, self.settings)
             rebuild.discard("restart")
             rebuild.discard("overlay")     # the front end owns the overlay
+            # Nothing here owns the model whisper-server loaded: it reads it
+            # once at startup, and app.py restarts that process on request.
+            # Left in, it matched no branch in _drain_pending but still made
+            # `if rebuild:` true, so every edit of server_model pushed a state
+            # document for a rebuild that never happened.
+            rebuild.discard("engine")
             self.settings.update(changed)
+            # Remember who chose these values. A later trusted patch clears the
+            # mark, because the desktop panel typing over a browser's value
+            # makes it the panel's value - the mark belongs to the value in the
+            # dict now, not to the history of the key.
+            if remote:
+                self._untrusted.update(changed)
+            else:
+                self._untrusted.difference_update(changed)
             self._pending.update(changed)
             self._rebuild |= rebuild
             if not self.alive():
@@ -350,7 +423,9 @@ class Pipeline(object):
         try:
             self.backend = create_backend(
                 s["backend"], server_url=s["server_url"],
-                model_path=s["model"], language=s["language"])
+                model_path=s["model"], language=s["language"],
+                local_device=s["local_device"],
+                local_compute=s["local_compute"])
             self._last_error = ""
         except BackendError as e:
             self.backend = None
@@ -428,7 +503,9 @@ class Pipeline(object):
                                  "{0}".format(e))
         try:
             self.source = audio_sources.create_source(
-                self.settings, self._on_audio, self.log)
+                self.settings, self._on_audio, self.log,
+                trusted="file_path" not in self._untrusted,
+                roots=self._audio_roots())
             self.source.start()
             self.log("info", "Capturing: {0}".format(self.source.name))
         except Exception as e:
@@ -816,7 +893,7 @@ class Pipeline(object):
 
     # -- benchmark --------------------------------------------------------
     def benchmark(self, buffers=(4, 8, 16, 24), wav=None, reps=2,
-                  headroom=1.5, min_overlap=3):
+                  headroom=1.5, min_overlap=3, trusted=False):
         """
         Time this machine through the backend that is actually serving.
 
@@ -825,6 +902,11 @@ class Pipeline(object):
         and under --backend auto would not even know which hardware it is on.
         Capture keeps running and the worker is paused for the duration, so the
         numbers are not competing with live inference.
+
+        `wav` is the door REMOTE_LOCKED cannot reach: it arrives as a command
+        argument rather than a settings patch, so nothing that filters patches
+        ever sees it. `trusted=False` by default because the socket is the
+        caller that matters; wpf_panel passes True.
         """
         import benchmark as bench
 
@@ -837,11 +919,25 @@ class Pipeline(object):
             self.emit("benchmark", {"status": "error",
                                     "msg": "No buffer sizes to measure."})
             return None
+        roots = self._audio_roots()
+        if wav:
+            # Refused here, before pause(True), so a rejected path does not
+            # stop live captions for the length of a benchmark that is not
+            # going to run. load_wav checks again at the sink; the two are the
+            # same call and the second one is the one that would still be
+            # there if this method were bypassed.
+            try:
+                wav = safe_paths.check_read_path(wav, trusted=trusted,
+                                                 roots=roots,
+                                                 what="benchmark WAV")
+            except safe_paths.PathRefused as e:
+                self.emit("benchmark", {"status": "error", "msg": str(e)})
+                return None
 
         self.pause(True)
         try:
             if wav:
-                source = bench.load_wav(wav)
+                source = bench.load_wav(wav, trusted=trusted, roots=roots)
                 described = "{0} ({1:.1f}s of real audio)".format(
                     wav, len(source) / float(SAMPLERATE))
                 synthetic = False

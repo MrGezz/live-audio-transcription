@@ -66,6 +66,13 @@ my_transcript.txt
 # it, so your own setups can never dirty the checkout.
 presets/*.json
 
+# The panel's one remembered value (settings.REMEMBERED - currently just the
+# GGML model the engine last started on). Untracked because it is a note about
+# THIS machine's _models folder, not a setting the project ships: a name that
+# is meaningful here is a file nobody else has. Deleting it restores the
+# defaults, and its absence is the ordinary first-run case.
+_state.json
+
 # ============================================================
 #  Desktop panel (ui/) - .NET
 #

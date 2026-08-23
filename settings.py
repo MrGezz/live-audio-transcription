@@ -50,8 +50,12 @@ from whisper_backends import WHISPER_LANGUAGES
 #   overlay   the Tk overlay window
 #   save      the transcript file handle
 #   restart   needs a full process restart (only the web listener)
+#   engine    needs the whisper-server process restarted (only server_model).
+#             Like "restart" there is nothing here to tear down - the value is
+#             spent outside this process, by start_whisper_server.cmd - so the
+#             pipeline discards it and the panels say so instead.
 REBUILDS = ("none", "strategy", "gate", "backend", "source", "overlay", "save",
-            "restart")
+            "restart", "engine")
 
 GROUPS = [
     ("audio", "Audio capture", "Where the sound comes from."),
@@ -287,14 +291,55 @@ SCHEMA = [
                     "label": "Auto (GPU server, CPU fallback)"},
                    {"value": "server",
                     "label": "whisper.cpp server (GPU)"},
-                   {"value": "local", "label": "faster-whisper (CPU)"}],
+                   {"value": "local",
+                    "label": "faster-whisper (CPU or CUDA)"}],
           cli="--backend", rebuild="backend"),
     Field("server_url", "str", "http://127.0.0.1:8080", "transcription",
           "Server URL", "Where whisper-server is listening.",
           cli="--server-url", rebuild="backend"),
+    Field("server_model", "choice", "ggml-base-q5_1.bin", "transcription",
+          "GPU model", "The GGML file whisper-server loads, server backend "
+          "only - the counterpart of the faster-whisper model below. Filled "
+          "in live from "
+          "_models\\. whisper-server reads it once, at startup, so this is the "
+          "one engine setting a running server cannot be told about: changing "
+          "it takes effect on the next Start or Restart on the Engine tab. "
+          "Remembered for next launch once a server has started on it.",
+          choices="ggml_models", cli="--server-model", cli_choices=False,
+          rebuild="engine"),
     Field("model", "path", r"_models\faster-whisper-medium", "transcription",
-          "CPU model path", "faster-whisper model folder, CPU backend only.",
+          "faster-whisper model", "Model folder for the faster-whisper "
+          "backend - the counterpart of the GGML file above. CPU by default; "
+          "see the device below, which is what decides whether this runs on "
+          "the processor or the GPU.",
           cli="--model", rebuild="backend"),
+    Field("local_device", "choice", "cpu", "transcription",
+          "faster-whisper device",
+          "Where the faster-whisper backend runs. It is CPU by default and "
+          "that is deliberate rather than a limitation: under backend=auto "
+          "this is the FALLBACK, and a fallback that needs the GPU is no "
+          "fallback at all - the server usually died because something was "
+          "wrong with the GPU. cuda needs an NVIDIA card and the CUDA 12 "
+          "runtime CTranslate2 is built against; auto tries cuda and quietly "
+          "settles for cpu if it cannot, which costs a few seconds on the one "
+          "pass where the server just died.",
+          choices=[{"value": "cpu", "label": "CPU"},
+                   {"value": "cuda", "label": "CUDA (NVIDIA GPU)"},
+                   {"value": "auto", "label": "Auto (CUDA, else CPU)"}],
+          cli="--local-device", rebuild="backend",
+          show_if={"backend": ["local", "auto"]}),
+    Field("local_compute", "choice", "auto", "transcription",
+          "faster-whisper precision",
+          "CTranslate2 compute type. auto picks int8 on the CPU and float16 "
+          "on CUDA, which is the right answer nearly always. Drop to "
+          "int8_float16 on CUDA when a large model will not fit in VRAM.",
+          choices=[{"value": "auto", "label": "Auto (int8 on CPU, float16 on GPU)"},
+                   {"value": "int8", "label": "int8"},
+                   {"value": "int8_float16", "label": "int8_float16"},
+                   {"value": "float16", "label": "float16"},
+                   {"value": "float32", "label": "float32"}],
+          cli="--local-compute", rebuild="backend", advanced=True,
+          show_if={"backend": ["local", "auto"]}),
     Field("language", "choice", "auto", "transcription", "Spoken language",
           "Pin it when you know it. Detection is not a one-off - it reruns on "
           "every buffer, so a short, quiet or music-backed window can decode "
@@ -536,13 +581,42 @@ BY_KEY = dict((f.key, f) for f in SCHEMA)
 DEFAULTS = dict((f.key, f.default) for f in SCHEMA)
 
 # Options a browser is not allowed to change, whatever it sends. A page served
-# to the network must not be able to point --model at an arbitrary path or
-# move the listener out from under itself; those are decisions for whoever
-# started the process. "wpf" is here for the same reason: whether a window
-# opens on the host machine belongs to whoever is sitting at it - and so does
-# what that window looks like, which is "wpf_theme".
+# to the network must not be able to move the listener out from under itself;
+# those are decisions for whoever started the process. "wpf" is here for the
+# same reason: whether a window opens on the host machine belongs to whoever is
+# sitting at it - and so does what that window looks like, which is
+# "wpf_theme".
+#
+# The three path keys are here because each one is the ONLY route from an
+# untrusted patch to a sink of its kind, and Pipeline.apply pops these keys
+# BEFORE it calls validate(), so the value never reaches any of them:
+#
+#   model      is not a path when it fails to be one. faster-whisper falls
+#              through to download_model() for any string that is not an
+#              existing directory (transcribe.py: `elif os.path.isdir(...)`,
+#              else `download_model(...)`), and local_files_only defaults
+#              False, so "someone/backdoor" is an outbound fetch followed by a
+#              CTranslate2 weight load - not the failed load it looks like.
+#   vad_model  is the only thing that aims the tree's only InferenceSession
+#              (speech_gate.py), i.e. attacker-named bytes into a native
+#              graph parser.
+#   output     is the only WRITE. transcript.py does makedirs(exist_ok=True)
+#              then open(path, "a"/"w"), and because `save` is a plain bool
+#              and apply() drains synchronously when nothing is running, both
+#              fire inside apply() with no start command. app.py already
+#              sanitises a preset NAME for exactly this reason; a transcript
+#              PATH had no such guard.
+#
+# file_path is deliberately NOT here, and that is not an oversight. Locking it
+# would remove a working browser feature (capture="file") while removing no
+# capability at all: the benchmark COMMAND takes a wav path straight off the
+# socket into wave.open (app.py _run_benchmark -> pipeline.benchmark ->
+# benchmark.load_wav) and never passes through apply(), so REMOTE_LOCKED
+# cannot reach it. Read paths are fixed as a class instead, at the sink and by
+# shape rather than by name, which reaches both doors - see safe_paths.py.
 REMOTE_LOCKED = ("web", "web_host", "web_port", "web_token", "web_open",
-                 "wpf", "wpf_theme")
+                 "wpf", "wpf_theme",
+                 "model", "vad_model", "output")
 
 
 class SettingsError(ValueError):
@@ -777,10 +851,16 @@ def from_args(parser, argv=None):
     """
     (settings, args) for a command line.
 
-    Precedence is defaults < preset < flags actually typed.
+    Precedence is defaults < remembered < preset < flags actually typed.
+
+    Remembered state sits directly above the defaults and below everything
+    anyone actually asked for: naming a preset or typing a flag is a statement
+    about THIS run, and neither should be quietly overruled by what the panel
+    happened to be doing last time.
     """
     args = parser.parse_args(argv)
     settings = dict(DEFAULTS)
+    settings.update(load_state())
 
     if args.preset:
         settings.update(load_preset(args.preset))
@@ -821,9 +901,20 @@ def load_preset(path):
 
 
 def save_preset(path, settings):
-    """Write only what differs from the defaults, so presets stay readable."""
+    """
+    Write only what differs from the defaults, so presets stay readable.
+
+    REMOTE_LOCKED keys are left out, and that is a bug fix rather than a
+    security measure - they are refused on the way back in either way. A
+    preset is a TRANSCRIPTION PROFILE; "is the desktop panel open" is not part
+    of one. Saving from the panel captured `wpf: true` simply because the
+    panel was running, and loading that preset then reported
+    "One setting in 'x' was refused" every single time - a scary toast, on
+    your own saved profile, about a key you never chose to put in it.
+    """
     trimmed = dict((k, v) for k, v in settings.items()
-                   if k in DEFAULTS and v != DEFAULTS[k])
+                   if k in DEFAULTS and v != DEFAULTS[k]
+                   and k not in REMOTE_LOCKED)
     trimmed["_comment"] = ("live-audio-transcription preset. Only non-default "
                            "values are stored; anything missing falls back to "
                            "the default.")
@@ -833,6 +924,75 @@ def save_preset(path, settings):
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(trimmed, fh, indent=2, sort_keys=True)
         fh.write("\n")
+
+
+# -------------------------------
+# Remembered state
+# -------------------------------
+# Deliberately NOT a settings file. Everything else in this schema is a
+# default, a flag or a named preset, and that is the whole design: nothing
+# about a run is hidden state you cannot see in a file you chose to write.
+#
+# server_model is the one key that breaks the rule, because it is the only
+# setting whose value is spent OUTSIDE this process. whisper-server reads the
+# model once, at startup, and the panel starts that server - so picking a model
+# is not "change a number the running engine will pick up", it is "launch a
+# different program". Forgetting it meant every restart silently reverted to
+# the .cmd's own default, which is the smallest model in _models and, on a CUDA
+# build, measurably the slowest of the useful ones.
+#
+# Kept to an explicit allow-list rather than "remember whatever changed", so
+# this never quietly grows into the settings file the design says no to.
+STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "_state.json")
+
+REMEMBERED = ("server_model",)
+
+
+def load_state(path=None):
+    """
+    The remembered keys, or {} - never fatal.
+
+    A missing, empty, unreadable or nonsense file is the normal first-run case
+    and means "nothing remembered", so unlike load_preset (which was named on a
+    command line by someone who meant it) this stays silent and returns {}.
+    """
+    try:
+        with open(path or STATE_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    wanted = dict((k, v) for k, v in data.items() if k in REMEMBERED)
+    clean, _ = validate(wanted)
+    return clean
+
+
+def save_state(values, path=None):
+    """
+    Remember the allow-listed keys. Returns True if the file was written.
+
+    Best-effort by design: a read-only checkout or a locked file is not a
+    reason to fail a server start that has otherwise worked.
+    """
+    # str(k) rather than k: testing `k in REMEMBERED` narrows the key type to
+    # those exact names, and a dict typed that narrowly rejects the "_comment"
+    # line below as a type error. Widening it here keeps the annotation-free
+    # style the rest of this module is written in.
+    keep = dict((str(k), v) for k, v in values.items() if k in REMEMBERED)
+    if not keep:
+        return False
+    keep["_comment"] = ("Written by the panel: the last engine choice, so the "
+                        "next launch starts on it. Safe to delete - the "
+                        "defaults come back.")
+    try:
+        with open(path or STATE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(keep, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+    except OSError:
+        return False
+    return True
 
 
 # -------------------------------
