@@ -154,6 +154,33 @@ def _preset_call(method, name):
     return on_ui(f)
 
 
+def _preset_call_watching(method, name):
+    """
+    As _preset_call, but recording how the Presets collection MOVED.
+
+    PresetBox is an editable ComboBox bound straight to that collection, and
+    its Text is the selection - so what the collection does to itself is the
+    whole question. A Reset (which is what Clear() raises) blanks the box.
+    Watching the events is the only way to see that from here: the ComboBox
+    itself is a view, and these tests drive the view model.
+    """
+    def f():
+        pane = main_vm().SettingsPane
+        seen = []
+
+        def on_changed(_sender, args):
+            seen.append(str(args.Action))
+
+        pane.Presets.CollectionChanged += on_changed
+        try:
+            _clear_toasts()
+            getattr(pane, method)(name)
+        finally:
+            pane.Presets.CollectionChanged -= on_changed
+        return seen, _presets()
+    return on_ui(f)
+
+
 def _field(key, prop):
     return on_ui(lambda: getattr(main_vm().SettingsPane.Field(key), prop))
 
@@ -238,6 +265,34 @@ class Presets(unittest.TestCase):
                          ("Error", "One setting in 'Bad' was refused"))
         self.assertEqual(message, "Buffer length: 99 is above the maximum 30")
         self.assertEqual(_field("buffer", "NumberValue"), before)
+        self.assertEqual(names, ["Bad", "Speech"])
+
+    def test_loading_a_preset_does_not_disturb_the_dropdown(self):
+        # The selection used to vanish the moment a load SUCCEEDED. app.py
+        # rides the preset list on every ack so a refusal cannot empty the
+        # dropdown, PresetAck hands every ack to SetPresets, and SetPresets
+        # cleared before it refilled - a Reset on the collection an editable
+        # ComboBox is bound to, which blanks its Text. A load cannot change
+        # the list, so the collection must not move at all.
+        changes, names = _preset_call_watching("LoadPreset", "Speech")
+        self.assertEqual(changes, [])
+        self.assertEqual(names, ["Bad", "Speech"])
+
+    def test_a_refusal_does_not_disturb_it_either(self):
+        changes, names = _preset_call_watching("LoadPreset", "nope")
+        self.assertEqual(changes, [])
+        self.assertEqual(names, ["Bad", "Speech"])
+
+    def test_saving_and_deleting_move_only_the_entry_that_changed(self):
+        # The list genuinely changes here, and it still must not Reset:
+        # typing a new name and pressing Save should leave the name in the
+        # box. Deleted last, so the tree is as this test found it.
+        changes, names = _preset_call_watching("SavePreset", "Fresh")
+        self.assertEqual(changes, ["Add"])
+        self.assertEqual(names, ["Bad", "Fresh", "Speech"])
+
+        changes, names = _preset_call_watching("DeletePreset", "Fresh")
+        self.assertEqual(changes, ["Remove"])
         self.assertEqual(names, ["Bad", "Speech"])
 
     def test_a_built_in_cannot_be_deleted_but_its_shadow_can(self):

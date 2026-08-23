@@ -12,7 +12,10 @@ came back in the text.
 No model and no server: the server path is driven through a fake `requests`,
 and the labelling through the real Pipeline._publish.
 """
+import copy
+import inspect
 import json
+import pickle
 import unittest
 from unittest import mock
 
@@ -54,6 +57,87 @@ class SegmentCarriesTheAnswer(unittest.TestCase):
         # "the backend did not say" and "the backend said no" are different
         # answers, and only the second one is evidence.
         self.assertIsNone(wb.Segment("hi", "ja").translated)
+
+
+class TheAnswerSurvivesBeingRebuilt(unittest.TestCase):
+    """
+    A Segment is a tuple subclass, so it cannot be edited: anything that
+    wants a changed one builds a new one. `translated` has to come along
+    every time. It is a measurement of what the backend did, and the rule
+    above it is that the answer may only ever be downgraded on evidence -
+    so a rebuild that hands back None instead of the True the backend
+    reported is exactly the silent relabelling that rule exists to stop.
+
+    Three routes reach __new__ a second time. copy and pickle go through
+    __getnewargs__; anyone doing it by hand uses those same args directly.
+    The first two turn out not to need the tail of that list at all - they
+    overwrite __new__'s work with the instance __dict__ - which is why an
+    incomplete __getnewargs__ was invisible for as long as it was. The
+    third has nothing to overwrite it with.
+    """
+
+    def segment(self, translated):
+        return wb.Segment(
+            "the stone castle", "ja",
+            words=[{"word": "the", "probability": 0.9, "start": 0.0},
+                   {"word": " stone", "probability": 0.8, "start": 0.4}],
+            start=0.0, end=1.2, no_speech_prob=0.01, avg_logprob=-0.31,
+            translated=translated)
+
+    def test_copy_keeps_the_answer(self):
+        for answer in (True, False, None):
+            with self.subTest(translated=answer):
+                self.assertIs(copy.copy(self.segment(answer)).translated,
+                              answer)
+                self.assertIs(copy.deepcopy(self.segment(answer)).translated,
+                              answer)
+
+    def test_pickle_keeps_it_at_every_protocol(self):
+        # Protocols 0 and 1 do not use __getnewargs__ at all; 2 and up do.
+        # Both routes have to arrive at the same answer, so all of them are
+        # walked rather than whichever one happens to be the default.
+        for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
+            for answer in (True, False, None):
+                with self.subTest(protocol=protocol, translated=answer):
+                    blob = pickle.dumps(self.segment(answer), protocol)
+                    self.assertIs(pickle.loads(blob).translated, answer)
+
+    def test_rebuilding_from_the_new_args_keeps_it(self):
+        # The route with nothing to overwrite a short argument list, and the
+        # one this class was written for: while translated was missing from
+        # __getnewargs__, this returned None for all three answers.
+        for answer in (True, False, None):
+            with self.subTest(translated=answer):
+                original = self.segment(answer)
+                self.assertIs(wb.Segment(*original.__getnewargs__()).translated,
+                              answer)
+
+    def test_the_new_args_are_the_whole_of_new(self):
+        # Checked against the signature rather than a written-down count, so
+        # that adding a ninth thing to a Segment fails here, saying which
+        # one, instead of quietly dropping out of every rebuild.
+        params = list(inspect.signature(wb.Segment.__new__).parameters)[1:]
+        self.assertEqual(params[-1], "translated")
+        self.assertEqual(len(self.segment(True).__getnewargs__()), len(params))
+
+    def test_a_rebuilt_segment_is_still_the_two_tuple_and_still_measured(self):
+        original = self.segment(True)
+        rebuilt = {"deepcopy": copy.deepcopy(original),
+                   "pickle": pickle.loads(pickle.dumps(original)),
+                   "by hand": wb.Segment(*original.__getnewargs__())}
+        for route, clone in rebuilt.items():
+            with self.subTest(route=route):
+                self.assertEqual(tuple(clone), ("the stone castle", "ja"))
+                self.assertIs(clone.translated, True)
+                self.assertEqual(clone.language, "ja")
+                self.assertEqual(clone.words, original.words)
+                self.assertEqual((clone.start, clone.end), (0.0, 1.2))
+                self.assertEqual(clone.no_speech_prob, 0.01)
+                self.assertEqual(clone.avg_logprob, -0.31)
+                # Not carried; recomputed from the words that are there,
+                # which is what lets a trimmed segment report an honest
+                # confidence rather than the whole window's.
+                self.assertAlmostEqual(clone.probability, 0.85)
 
 
 class ServerReadsTheTask(unittest.TestCase):

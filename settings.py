@@ -727,6 +727,16 @@ def build_parser(description, extra=None):
     parser.add_argument(
         "--list-devices", dest="list_devices", action="store_true",
         help="Print the capture devices this machine has, then exit")
+    parser.add_argument(
+        "--start-server", dest="start_server", action="store_true",
+        help="Start whisper-server from here instead of expecting one to be "
+             "running, with no console of its own - its log goes to the "
+             "panel and to logs/. run_pipeline.cmd passes this for the two "
+             "panel front ends, where it is what removes the second window")
+    # Deliberately NOT a Field. Every Field generates a control in both
+    # panels (invariant 13), and "start the server I am already running
+    # inside of" is a thing you can only say before the process exists -
+    # a tickbox for it would do nothing whichever way it was set.
     for pos_args, pos_kwargs in (extra or []):
         parser.add_argument(*pos_args, **pos_kwargs)
     return parser

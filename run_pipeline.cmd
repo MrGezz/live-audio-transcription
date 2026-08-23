@@ -69,6 +69,8 @@ REM  tests below sends every selection down the first branch - see the second
 REM  trap noted under the tests.
 set "WEBUI=0"
 set "WPFUI=0"
+REM  Set only on the panel paths, in Step 1, and passed through below.
+set "SERVER_ARG="
 choice /C 12345 /N /M "Select what to run [1/2/3/4/5]: "
 REM  Two traps here, and the second one is silent:
 REM   - "if errorlevel N" means N OR HIGHER, so 3 also satisfies the test for
@@ -293,10 +295,23 @@ if not exist "!SERVER!" (
     pause
     exit /b 1
 )
+REM  The two panel front ends start the server THEMSELVES, so it gets no
+REM  window: app.py launches the same .cmd with no console and reads its
+REM  output back down a pipe, into the panel's Log tab and logs\. That is
+REM  one window fewer, and it is why --start-server exists. The console
+REM  modes keep the separate window, because there is no panel to put the
+REM  log in and the console they would share is the transcript.
+if "!WEBUI!"=="1" goto server_in_panel
+if "!WPFUI!"=="1" goto server_in_panel
 echo Opening the whisper server in its own window...
 start "Whisper Server" cmd /k call "!SERVER!"
 echo Waiting a few seconds for it to start up...
 timeout /t 5 /nobreak >nul
+goto venv
+
+:server_in_panel
+echo The control panel will start it - no second window.
+set "SERVER_ARG=--start-server"
 
 :venv
 echo.
@@ -373,12 +388,12 @@ REM  Nothing else is passed on purpose. The panel reads the same schema the
 REM  flags are generated from, so anything set here would only be a value the
 REM  page immediately offers to change - and a device chosen here would be
 REM  chosen twice, since the console picker is skipped under --web.
-set "PYARGS=--web"
+set "PYARGS=--web !SERVER_ARG!"
 goto run
 
 :wpfargs
 REM  Same reasoning as :webargs - the window offers every option itself.
-set "PYARGS=--wpf"
+set "PYARGS=--wpf !SERVER_ARG!"
 goto run
 
 :benchargs

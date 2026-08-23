@@ -59,6 +59,12 @@ SAMPLERATE = 16000
 # invented text more readily than it transcribes it.
 MIN_FLUSH_SAMPLES = SAMPLERATE // 4
 
+# How many words of the previous window's tail may go unmatched and a shared
+# run still count as the overlap. See _overlap_length, which is the only
+# thing that reads it - and the measurement that says 2, where 0 and 1 leave
+# duplicates behind and 3 and 4 change nothing.
+OVERLAP_SLACK = 2
+
 
 def _opt(settings, key):
     """
@@ -99,6 +105,127 @@ def _text_of(segment):
     if isinstance(segment, (tuple, list)) and segment:
         return str(segment[0])
     return str(getattr(segment, "text", "") or "")
+
+
+def _words_of(segment):
+    """A segment's word timings, in whatever shape it arrived in."""
+    if isinstance(segment, dict):
+        return list(segment.get("words") or [])
+    return list(getattr(segment, "words", None) or [])
+
+
+def _retext(segment, text, words=None):
+    """
+    The same segment carrying different text.
+
+    The overlap filter has to be able to remove the first few words of a
+    segment rather than only the whole segment, and it has to do that
+    without knowing what a segment IS: the backends return Segment, the
+    transcript writer and the web UI carry dicts, and live_transcription.py
+    still unpacks a bare (text, language) tuple. Anything that carries more
+    than its text says so by offering retext(), because only it can decide
+    what has to move with the text - Segment's language, its word timings
+    and the `translated` flag invariant 16 measures rather than assumes.
+    Everything else is rebuilt in the shape it arrived in.
+    """
+    rewrite = getattr(segment, "retext", None)
+    if callable(rewrite):
+        return rewrite(text, words)
+    if isinstance(segment, str):
+        return text
+    if isinstance(segment, dict):
+        out = dict(segment)
+        out["text"] = text
+        if words is not None and "words" in out:
+            out["words"] = words
+        return out
+    if isinstance(segment, (tuple, list)) and segment:
+        return (text,) + tuple(segment)[1:]
+    return text
+
+
+def _split_words(text):
+    """
+    A segment's text as display words, each with the key it compares by.
+
+    Split on whitespace and NOT on _key()'s rules, because the trim has to
+    put what survives back together afterwards: "dog." is one word to a
+    reader and one word to whisper's timings, and only the key it is matched
+    on drops the full stop. Keys are therefore allowed to be empty - a
+    standalone quote mark is a word to the joiner and nothing to the matcher.
+    """
+    return [(word, _key(word)) for word in text.split()]
+
+
+def _drop_leading_words(words, count):
+    """
+    The word timings left once the first `count` display words are trimmed.
+
+    A token index is not a word index: whisper returns sub-word tokens, so
+    "Silero" arrives as "Sil", "er", "ow" and a comma arrives as a token
+    belonging to no word at all. What marks a word boundary is the leading
+    space the tokenizer keeps on the first token of each word - the same
+    thing that makes the tokens concatenate back into the segment's text.
+    Counting tokens instead would cut "Silero" into "ow" and leave the word
+    timings describing text that is no longer there.
+    """
+    if count <= 0:
+        return list(words or [])
+    index, out = -1, []
+    for word in words or []:
+        text = (word.get("word", "") if isinstance(word, dict)
+                else str(getattr(word, "word", "")))
+        if index < 0 or text[:1].isspace():
+            index += 1
+        if index >= count:
+            out.append(word)
+    return out
+
+
+def _overlap_length(prev_words, new_words, slack=OVERLAP_SLACK):
+    """
+    How many of this window's leading words the previous window already said.
+
+    The overlap is at the FRONT of this window and at the BACK of the last
+    one, always, because that is what the geometry means. So a run of words
+    the two windows share is evidence of the overlap exactly when it reaches
+    the previous window's END, and the cut is the furthest such run's far
+    edge. Anchoring on the tail is the whole trick, and anchoring on both
+    ends is what does not work: whisper re-decodes the overlap differently
+    either side of the cut, so difflib routinely splits it into two runs -
+    measured at --buffer 4 --slide 1, "a gap only ends" at the head and "it
+    has" at the tail, with neither run touching both ends and the trim
+    therefore firing on neither.
+
+    `slack` is how many words of the previous window's tail may go unmatched
+    and the run still count. It exists because the last word of a window is
+    the one the cut went through, so it is the one most likely to come back
+    spelled differently. Measured over five geometries of
+    tests/fixtures/speech_sample.wav, 0 and 1 both leave duplicates behind
+    (49 and 11 repeated words against 10) and 2, 3 and 4 are identical, so
+    the useful range saturates at 2.
+
+    A one-word run gets no slack at all, and has to sit in both corners -
+    the previous window's last word against this window's first. That
+    single exception is worth its line: an interior one-word match is a
+    coincidence, and believing it cost three words of real speech in the
+    measurement ("...contains speech" against "a gap only in speech" ate
+    everything up to the second "speech"), while a corner one-word match is
+    the ordinary case of a window opening on the tail of the last word the
+    previous one printed ("...long enough" then "enough 400 milliseconds").
+    """
+    if not prev_words or not new_words:
+        return 0
+    matcher = difflib.SequenceMatcher(None, prev_words, new_words,
+                                      autojunk=False)
+    cut = 0
+    for a, b, size in matcher.get_matching_blocks():
+        if size >= 2:
+            if a + size >= len(prev_words) - slack:
+                cut = max(cut, b + size)
+        elif size == 1 and b == 0 and a + size == len(prev_words):
+            cut = max(cut, 1)
+    return min(cut, len(new_words))
 
 
 class Decision(object):
@@ -381,37 +508,120 @@ class SlidingWindow(BufferingStrategy):
 
     def filter(self, segments):
         """
-        Drop segments that only repeat the previous window's overlap.
+        Remove the speech this window shares with the previous one.
 
-        Fuzzy, not ==: overlapping windows transcribe the same speech twice
-        with small wording differences. Two things here are load-bearing, and
-        both were learned the hard way:
+        The trim is per WORD, and it has to be, because the unit a whisper
+        server returns is not the unit the overlap arrives in. Segments are
+        cut where the server's own caption wrapping says, which has no
+        relationship at all to where the audio was cut: measured against a
+        live whisper-server over the repo's own fixture, window 2 of
+        --buffer 4 --slide 2 came back as the single segment "Silerow
+        decides whether this buffer contains speech.", of which the first
+        four words were already printed by window 1. A keep-or-drop test
+        over whole segments has no move that expresses "print the second
+        half of this", so it printed the lot.
+
+        It could not even catch the segments that ARE whole repeats. Window
+        1's "over the lazy dog." against window 0's "the quick brown fox
+        jumps over the lazy dog." scores 0.57 on difflib's ratio, because
+        the ratio is over the sum of both lengths and the previous line is
+        the longer one; the shipped threshold is 0.80. Over twelve windows
+        of that fixture the old filter fired ZERO times, and the transcript
+        came back 98 words long where 56 were spoken.
+
+        Three things are load-bearing here, and all three were learned the
+        hard way:
 
           * Only the IMMEDIATELY previous window can overlap this one, so
             matching against a longer history just eats deliberate repeats:
             "Thank you." either side of an intervening window scores 1.00
             against itself and would silently vanish at any threshold.
-          * The remembered key list includes segments that were themselves
-            dropped as duplicates. They were still spoken inside this window,
-            so the next window overlaps them too; forgetting them lets the
-            same line reappear one pass later.
+          * The remembered key list is what the window DECODED, not what it
+            printed. A window's own trimmed-off head was still spoken inside
+            it, so the next window overlaps that too; remembering only the
+            printed part lets the same line reappear one pass later.
+          * The whole-segment test below still runs, on what survives the
+            trim. It fired on nothing in any of the five geometries measured
+            - the trim gets there first - so it costs nothing, and it is the
+            only thing `--dedup-threshold` reaches. Deleting it as dead would
+            leave a shipped setting that changes nothing.
+
+        Measured over five geometries of tests/fixtures/speech_sample.wav
+        (56 words spoken), words printed / duplicated / lost:
+
+            buffer/slide   before          after
+            4 / 2          98 / 32 / 0     59 /  3 / 0
+            4 / 1         146 / 63 / 0     63 /  4 / 0
+            6 / 2         128 / 60 / 0     58 /  2 / 0
+            3 / 2          74 / 15 / 0     57 /  3 / 0
+            8 / 4          67 / 17 / 5     51 /  1 / 5
+
+        The five lost words at 8/4 are lost before the filter sees them -
+        the old filter loses the same five - and no geometry loses a word to
+        the trim itself.
         """
-        kept, dropped, keys = [], [], []
-        for segment in segments:
-            key = _key(_text_of(segment))
-            keys.append(key)
+        keys = [_key(_text_of(segment)) for segment in segments]
+        per_segment = [_split_words(_text_of(segment)) for segment in segments]
+        flat = [pair for words in per_segment for pair in words]
+        # Punctuation-only words cannot be matched, so they are not offered
+        # to the matcher - and the answer therefore has to be mapped back
+        # onto the words that will actually be printed.
+        matchable = [i for i, (_, key) in enumerate(flat) if key]
+        cut = _overlap_length(" ".join(self._prev_keys).split(),
+                              [flat[i][1] for i in matchable])
+        end = matchable[cut] if cut < len(matchable) else len(flat)
+
+        kept, dropped, offset = [], [], 0
+        head_text = " ".join(word for word, _ in flat[:end])
+        if _key(head_text):
+            # Reported as a caption in its own right, because that is what it
+            # would have been. A plain string, not a segment: a dropped item
+            # is only ever read for its text, and the timings that made this
+            # one part of a Segment now belong to the caption it was cut off.
+            dropped.append(head_text)
+        for index, segment in enumerate(segments):
+            words = per_segment[index]
+            head = max(0, min(end - offset, len(words)))
+            offset += len(words)
+            body = words[head:]
+            if not body:
+                dropped.append(segment)
+                continue
+            text = " ".join(word for word, _ in body)
+            if head:
+                segment = _retext(
+                    segment, text,
+                    _drop_leading_words(_words_of(segment), head))
+            key = _key(text)
             if key and not self._is_duplicate(key):
                 kept.append(segment)
             else:
-                # Empty keys land here too: punctuation-only segments have
-                # nothing to print and nothing to compare.
+                # Empty keys land here too: a segment left holding only
+                # punctuation has nothing to print and nothing to compare.
                 dropped.append(segment)
+        # What was DECODED, before the trim - see the second bullet above.
         self._prev_keys = keys
         return kept, dropped
 
     def _is_duplicate(self, key):
         return any(difflib.SequenceMatcher(None, key, prev).ratio()
                    > self.dedup_threshold for prev in self._prev_keys)
+
+    def reset(self):
+        """
+        Drop the buffered audio AND the text that described it.
+
+        Deliberately unlike configure(), which keeps the dedup history on
+        purpose: re-tuning a setting mid-sentence leaves the previous window
+        still adjacent to the next one, so its words are still the overlap.
+        reset() throws the audio away, and after that the next window is not
+        adjacent to anything - so matching against the old text can only trim
+        words nobody said twice. Cheap when the filter could merely drop a
+        whole segment scoring over 0.80; a word-level trim will happily eat
+        a leading phrase that coincides.
+        """
+        BufferingStrategy.reset(self)
+        self._prev_keys = []
 
 
 class SilenceAtEndOfChunk(BufferingStrategy):

@@ -94,6 +94,8 @@ python live_transcription.py
 The server startup log should list your GPU as a Vulkan device (e.g. `ggml_vulkan: 0 = ...`) or, on a CUDA build, `ggml_cuda_init: found N CUDA devices`. Leave that window running.
 
 > **Prefer a guided setup?** Double-click `Start Transcription.vbs` (or run `run_pipeline.cmd`). It asks which script, capture mode and flags you want, then creates the venv, installs requirements, and starts the server for you. Option **[4] Web UI** skips the questions entirely and opens the control panel instead.
+>
+> Choosing **[4] Web UI** or **[5] Desktop UI** leaves you with **one** window, not three: the panel starts whisper-server itself with no console of its own, and the launcher's console hides once the panel is up. Everything either would have printed goes to `logs/session_*.log` (the last 10 runs are kept), and the server's startup — including the line naming your GPU — also appears in the panel's **Log** tab. The console modes are unchanged, since there the console *is* the transcript.
 
 ## Web UI
 
@@ -394,6 +396,7 @@ project/
 ├─ Start Transcription.vbs       # ← START HERE. Double-click shortcut for the launcher
 ├─ run_pipeline.cmd              # THE launcher: venv + requirements + server + script
 ├─ start_whisper_server.cmd      # One component: the whisper.cpp GPU server
+├─ console.py                    # Session log in logs/; hides the console once a panel is up
 ├─ presets/                      # Saved configurations (JSON)
 ├─ SETUP_AMD.md                  # AMD GPU setup walkthrough (CUDA note for NVIDIA inside)
 ├─ UPSTREAM_MINING.md            # What was mined from faster-whisper and whisper.cpp

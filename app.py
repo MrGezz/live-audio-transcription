@@ -41,6 +41,7 @@ import urllib.request
 import webbrowser
 
 import audio_sources
+import console
 import settings as settings_mod
 from pipeline import Pipeline
 
@@ -76,7 +77,7 @@ CONSOLE_KINDS = ("log", "transcript", "state", "benchmark")
 
 
 class App(object):
-    def __init__(self, settings, quiet=False):
+    def __init__(self, settings, quiet=False, start_server=False):
         self.settings = dict(settings)
         self.quiet = quiet
         self.pipeline = Pipeline(self.settings, emit=self._on_event)
@@ -84,6 +85,10 @@ class App(object):
         self.server = None
         self.panel = None
         self._server_proc = None
+        # Set the moment whisper-server first answers, which is where its
+        # output stops being worth showing - see _pump_server_output.
+        self._server_ready = threading.Event()
+        self._start_server_at_boot = bool(start_server)
         self._engine_poll_started = False
         self._stop = threading.Event()
         self._last_overlay_style = None
@@ -104,7 +109,24 @@ class App(object):
 
     # -- lifecycle --------------------------------------------------------
     def run(self):
+        # Before the banner, so the session log holds this run from its very
+        # first line - and only when a panel was asked for. With no front end
+        # the console IS the front end, and nothing here should touch it.
+        if self.settings["web"] or self.settings["wpf"]:
+            log_path = console.capture()
+            if log_path:
+                print("Session log: {0}".format(
+                    os.path.relpath(log_path, HERE)))
         self._print_banner()
+        # BEFORE the pipeline, and blocking, which is the same order
+        # run_pipeline.cmd used when it owned this: it started the server and
+        # slept 5 seconds before running Python. Starting it afterwards would
+        # hand the first few windows to a backend that cannot reach it, which
+        # for --backend auto is not a delay but a decision - five failures and
+        # it has fallen back to CPU for the next minute (invariant 4). This
+        # waits for a real answer rather than a fixed sleep.
+        if self._start_server_at_boot:
+            self._engine_start({})
         try:
             self.pipeline.start()
         except Exception as e:
@@ -116,6 +138,7 @@ class App(object):
             self._start_wpf()
         if self._has_front_end():
             self._start_engine_poll()
+            self._hide_console()
 
         try:
             self._main_loop()
@@ -222,8 +245,35 @@ class App(object):
         if panel is not None and panel.alive:
             panel.event(kind, data)
 
+    def _hide_console(self):
+        """
+        Take the console off the screen, now that something has replaced it.
+
+        AFTER a front end is up, and never before. Both starters degrade to
+        "the panel is off; transcription carries on" and say so in a print,
+        so hiding first would turn a missing .NET runtime from a printed
+        sentence into a process with no window and no panel at all - the one
+        outcome worse than the three windows this removes. `_has_front_end`
+        is already the question "is something else on screen", which makes it
+        the same question as "can this window go".
+
+        Nothing else needs to know it happened: console.capture() has been
+        teeing stdout and stderr into logs/ since before the banner, and
+        console.restore() is registered to put the window back on the way
+        out, so cmd's own "safe to close this window" lands somewhere visible.
+        """
+        if console.hide():
+            # Into the session log only, which is the point: this is the line
+            # that explains an empty screen to whoever reads it afterwards.
+            print("Console hidden - the panel is the front end now.")
+
     def shutdown(self):
         self._stop.set()
+        # First, so the console is already back when the prints below land -
+        # and before anything that can throw. atexit would catch it either
+        # way; this just means the window returns at the start of shutdown
+        # rather than after the interpreter has finished tearing down.
+        console.restore()
         if self.overlay is not None:
             try:
                 self.overlay.close()
@@ -1057,9 +1107,11 @@ class App(object):
                 pid, e))
             return
         self._server_proc = None
-        # Only the server is killed, not the console window around it: the last
-        # lines of that log are the only place the reason for a crash is
-        # written down, and the window sits at its own pause holding them.
+        self._server_ready.clear()
+        # Only the server is killed, not the cmd around it, which is left to
+        # reach its own `pause` and exit. Its last lines are the only place
+        # the reason for a crash is written down, and the pump is still
+        # reading them into the session log for as long as it takes.
         deadline = time.monotonic() + self.ENGINE_STOP_WAIT_SEC
         while time.monotonic() < deadline and self._server_pid() is not None:
             time.sleep(0.25)
@@ -1114,41 +1166,64 @@ class App(object):
         # or external command" - into a console nobody sees, which is why
         # pressing Start did nothing at all and reported nothing.
         #
-        # CREATE_NEW_CONSOLE rather than the old `cmd /c start "" cmd /k`. That
-        # form needed an interactive window station to work and gave back a
-        # handle to the launcher, which exited within milliseconds of spawning
-        # the window - so the handle said "dead" while the server ran for
-        # hours. This gives it its own window AND a handle whose lifetime is
-        # the server's.
+        # No console of its own any more, and its output comes back down a
+        # pipe instead - see _pump_server_output. It used to get
+        # CREATE_NEW_CONSOLE, which was itself a fix for `cmd /c start "" cmd
+        # /k`: that form needed an interactive window station and handed back
+        # a handle to the LAUNCHER, which exited within milliseconds of
+        # spawning the window, so the handle said "dead" while the server ran
+        # for hours. CREATE_NO_WINDOW keeps the good half of that - a handle
+        # whose lifetime is the server's - and drops the window, which was
+        # never a user interface, only a log with a title bar.
+        #
+        # stdin is DEVNULL, and that is what makes going through the .cmd
+        # still work: it ends in `pause`, which with no console to read from
+        # would otherwise block forever holding an invisible process. On EOF
+        # it returns at once - measured at 0.02 s on the model-not-found
+        # path, with every line of the .cmd's own diagnostics arriving down
+        # the pipe. Which is the reason for still going through it rather
+        # than running whisper-server.exe directly: the .cmd owns the default
+        # model name, the path checks and the STATUS_ILLEGAL_INSTRUCTION
+        # explanation, and calling the exe would mean a second copy of all
+        # three here.
         cmd = ["cmd", "/c", os.path.join(".", os.path.basename(SERVER_CMD))]
         if model:
             cmd.append(model)
+        self._server_ready.clear()
         try:
             self._server_proc = subprocess.Popen(
                 cmd, cwd=HERE,
-                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT)
         except OSError as e:
             self.pipeline.log("error", "Could not start it: {0}".format(e))
             return
-        self.pipeline.log("info", "whisper-server starting with {0} - it loads "
-                                  "in its own window.".format(
+        threading.Thread(target=self._pump_server_output,
+                         args=(self._server_proc,),
+                         name="server-log", daemon=True).start()
+        self.pipeline.log("info", "whisper-server starting with {0} - its log "
+                                  "is below.".format(
                                       model or "the default model"))
         deadline = time.monotonic() + self.ENGINE_START_WAIT_SEC
         while time.monotonic() < deadline:
             proc = self._server_proc
             if proc is not None and proc.poll() is not None:
-                # The .cmd ends in `pause`, so it only returns once its window
-                # has been closed or it never opened one. Either way there is
-                # nothing left to wait for.
+                # The .cmd's `pause` returns on EOF now, so an exit here means
+                # it genuinely gave up - and the reason is already in the log
+                # above, because the pump forwards everything until the server
+                # answers.
                 self.pipeline.log(
                     "error", "The launcher exited with code {0} before the "
-                             "server answered. Its window has the reason - if "
-                             "none opened, run {1} yourself to see it.".format(
-                                 proc.returncode,
-                                 os.path.basename(SERVER_CMD)))
+                             "server answered - the lines above are its own "
+                             "account of why.".format(proc.returncode))
                 self._server_proc = None
                 return
             if self._server_reachable(timeout=1.0):
+                # Startup is over, so the pump stops forwarding: from here
+                # whisper-server prints four lines per REQUEST, which at a 2 s
+                # slide is two a second for the rest of the session.
+                self._server_ready.set()
                 self.pipeline.log("info", "whisper-server is answering on "
                                           "{0}.".format(
                                               self.settings.get("server_url")))
@@ -1158,9 +1233,49 @@ class App(object):
             time.sleep(0.5)
         self.pipeline.log(
             "warn", "whisper-server has not answered within {0:.0f}s. A large "
-                    "model can take longer than that to load - watch its "
-                    "window, and press Reconnect once it says it is listening."
+                    "model can take longer than that to load - watch the log "
+                    "above, and press Reconnect once it says it is listening."
                     .format(self.ENGINE_START_WAIT_SEC))
+
+    def _pump_server_output(self, proc):
+        """
+        whisper-server's console, now that it does not have one.
+
+        Two sinks, because the two audiences want different things. The
+        SESSION LOG gets every line, in full: that file is what replaced the
+        window, and a window whose scrollback is thrown away would be a
+        worse trade than the window was. The panel's Log tab gets only what
+        someone watching would want to read - everything up to the moment
+        the server answers, which is where the Vulkan/CUDA device list and
+        any load failure are (SETUP_AMD.md tells you to check exactly that),
+        and after it nothing, because the running server says only
+
+            system_info: n_threads = 4 / 8 | WHISPER : COREML = 0 | ...
+            operator (): processing 'buffer.wav' (65536 samples, 4.1 sec)...
+
+        four lines at a time, once per request. Measured over one 26 s file
+        at the default slide: 103 lines, of which 96 were those.
+
+        Never raises into the thread's exit: this is a log pump, and a
+        program that dies because it could not write a log line is worse
+        than one that quietly stops logging.
+        """
+        stream = proc.stdout
+        if stream is None:
+            return
+        try:
+            for raw in iter(stream.readline, b""):
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                console.record("SRV", line)
+                if line.strip() and not self._server_ready.is_set():
+                    self.pipeline.log("info", "[server] {0}".format(line))
+        except Exception:
+            pass
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
 
 
 def main(argv=None):
@@ -1171,7 +1286,7 @@ def main(argv=None):
     if args.list_devices:
         audio_sources.print_devices()
         return 0
-    App(resolved).run()
+    App(resolved, start_server=args.start_server).run()
     return 0
 
 

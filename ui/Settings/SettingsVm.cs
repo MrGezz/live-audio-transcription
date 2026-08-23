@@ -382,10 +382,44 @@ public sealed class SettingsVm : ViewModelBase
             return;
         }
 
-        Presets.Clear();
+        var names = new List<string>();
         foreach (Doc p in list.Items())
         {
-            Presets.Add(p.Kind == JsonValueKind.String ? p.Str() : p["name"].Str());
+            names.Add(p.Kind == JsonValueKind.String ? p.Str() : p["name"].Str());
+        }
+
+        // Edited into shape, never Clear()ed and refilled. PresetBox is an
+        // EDITABLE ComboBox bound to this collection, and Clear() raises a
+        // CollectionChanged Reset, which WPF answers by blanking the box's
+        // Text. app.py rides the preset list on every ack precisely so a
+        // refusal cannot empty the dropdown - so every successful Load, of a
+        // list that a Load cannot possibly have changed, threw the selection
+        // away the moment it worked. OnPresetDelete setting PresetBox.Text
+        // to "" by hand is the evidence that the box was always meant to
+        // keep its text otherwise.
+        //
+        // Removals first, then insertions at the position app.py sent, so
+        // the result is that order without a Reset anywhere. Only the entry
+        // actually removed loses a selection, which is what deleting the
+        // selected preset should do.
+        for (int i = Presets.Count - 1; i >= 0; i--)
+        {
+            if (!names.Contains(Presets[i]))
+            {
+                Presets.RemoveAt(i);
+            }
+        }
+
+        for (int i = 0; i < names.Count; i++)
+        {
+            if (i >= Presets.Count)
+            {
+                Presets.Add(names[i]);
+            }
+            else if (!string.Equals(Presets[i], names[i], StringComparison.Ordinal))
+            {
+                Presets.Insert(i, names[i]);
+            }
         }
     }
 

@@ -143,6 +143,28 @@ class Pipeline(object):
             self._build_backend()
             self._build_gate()
             self._build_strategy()
+            # A new session starts from nothing. _build_strategy reuses the
+            # object, and everything it holds is about the session that just
+            # ended: audio buffered at the moment of the Stop, and (sliding
+            # window) the text of the last window transcribed. Measured on a
+            # Stop after 3 s of held audio, a Start put those 3 s at the front
+            # of the first new window - so the first window of the new session
+            # straddled the gap - and matched the first new caption against a
+            # window it is not adjacent to.
+            #
+            # Here rather than in _build_strategy, which _drain_pending also
+            # calls: there the strategy is being retuned mid-session and
+            # keeping the remembered text is the point, since the previous
+            # window is still adjacent to the next one. (configure() drops the
+            # buffered audio itself, but only when the window geometry moved -
+            # see SlidingWindow.configure. It never drops the text.)
+            # "Rebuild to match the settings" and "this is a new session" are
+            # different questions and only start() can answer the second.
+            #
+            # Nothing feeds the strategy between here and _build_source below,
+            # and the early return above means a Start against a running
+            # session never reaches this line.
+            self.strategy.reset()
             self._build_writer()
             self._worker = threading.Thread(target=self._run,
                                             name="transcriber", daemon=True)

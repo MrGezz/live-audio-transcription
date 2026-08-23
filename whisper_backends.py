@@ -463,8 +463,48 @@ class Segment(tuple):
     def __getnewargs__(self):
         # tuple's own would hand __new__ a single 2-tuple argument, and the
         # copy would come back with text=("...", "en") and no language.
+        #
+        # Every parameter of __new__, in order, including translated. Copy and
+        # pickle do not in fact need the tail of this: they restore the
+        # instance __dict__ over the top of whatever __new__ built, so a
+        # segment round-trips intact even with arguments missing here - which
+        # is why translated being absent was invisible. What is left over is
+        # anyone rebuilding a segment from these args directly, where a short
+        # list quietly relabels a translated caption as untranslated. There is
+        # no reason for the two lists to disagree, so they do not.
         return (self.text, self.language, self.words, self.start, self.end,
-                self.no_speech_prob, self.avg_logprob)
+                self.no_speech_prob, self.avg_logprob, self.translated)
+
+    def retext(self, text, words=None):
+        """
+        The same segment with different text - what the overlap filter needs.
+
+        `buffering.SlidingWindow.filter` trims the words this window shares
+        with the previous one off the front of a caption, and a 2-tuple
+        subclass cannot be edited in place: (text, language) IS the tuple.
+        So it asks for a new one, through a method rather than by rebuilding
+        the object itself, because only this class knows what has to come
+        along. In particular `translated` does: it is a measurement of what
+        the backend did with this audio (invariant 16), trimming a repeated
+        head off the front does not change that answer, and a rebuild that
+        forgot it would silently relabel a translated caption as untranslated
+        for no reason a reader could see.
+
+        Everything else that measures the AUDIO survives untouched for the
+        same reason - language, no_speech_prob, avg_logprob. `start` moves to
+        the first word left, because that one genuinely is different: the
+        caption no longer begins where the segment did. `probability` is not
+        carried at all; __new__ recomputes it as the mean over the words that
+        remain, which is the only honest answer once some are gone.
+        """
+        kept = list(self.words if words is None else words)
+        start = self.start
+        if kept and words is not None:
+            start = kept[0].get("start", start)
+        return Segment(text, self.language, words=kept, start=start,
+                       end=self.end, no_speech_prob=self.no_speech_prob,
+                       avg_logprob=self.avg_logprob,
+                       translated=self.translated)
 
     def as_dict(self):
         """JSON-serialisable form, for the transcript file and the web UI."""

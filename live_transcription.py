@@ -119,7 +119,7 @@ def main(argv=None):
     if not settings["web"] and not settings["wpf"]:
         choose_device(settings)
 
-    App(settings).run()
+    App(settings, start_server=args.start_server).run()
     return 0
 
 
