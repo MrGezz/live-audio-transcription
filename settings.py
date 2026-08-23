@@ -303,7 +303,12 @@ SCHEMA = [
           choices="languages", cli="--language", cli_choices=False,
           rebuild="none"),
     Field("translate", "bool", False, "transcription", "Translate to English",
-          "Sent per request, so this switches mid-session with no restart.",
+          "Sent per request, so this switches mid-session with no restart. "
+          "Needs a model that can translate: a *-turbo model accepts the task "
+          "and transcribes anyway, and English-only (ggml-*.en) models cannot "
+          "translate at all. When that happens the caption keeps its own "
+          "language tag and the log says why, rather than claiming to be "
+          "English.",
           cli="--translate", rebuild="none"),
 
     # -- decoding ---------------------------------------------------------

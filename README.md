@@ -41,7 +41,7 @@ form and the validation are all generated from it.
 - **Browser control panel** (`--web`) — every one of the 60
  options, changeable *while it runs*, with live meters, word-confidence colouring and a benchmark you can apply with one click. See [Web UI](#web-ui).
 - **Per-word confidence** — both backends report the probability of every word, so a caption that reads fluently but was a guess does not look like one the model was sure of. It also makes `.srt` / `.vtt` export possible from any session.
-- Optional translation to English (`--translate`) — passed per-request, no server restart needed.
+- Optional translation to English (`--translate`) — passed per-request, no server restart needed. A caption is only labelled as translated when it actually came back translated: a model that ignores the task (`large-v3-turbo` does) gets one warning in the log and keeps its own language tag.
 - Optional **spoken-language pinning** (`--language ms`) — skips per-buffer auto-detection, which can otherwise disagree with itself on short or noisy windows.
 - **Silero voice-activity detection** — buffers with no speech in them are skipped before inference, so fans, music and room tone stop producing hallucinated captions (and stop costing GPU time). No extra dependency; disable with `--no-vad`.
 - **Two chunking strategies** (`--strategy`) — a sliding window with a duplicate filter, or wait-for-silence, which never cuts a word in half.
@@ -289,7 +289,7 @@ Treat the result as a starting point, not a verdict. The benchmark runs on an ot
 | Flag | Default | Purpose |
 |---|---|---|
 | `--capture` | `loopback` | `loopback` (capture any output device via WASAPI) / `input` (Stereo Mix, mic) |
-| `--translate` | off | Translate speech to English as it transcribes |
+| `--translate` | off | Translate speech to English as it transcribes (needs a model that can — **not** `large-v3-turbo`) |
 | `--language` | `auto` | Spoken language as a Whisper code (`en`, `ms`, `ja`, `zh`, ...). `auto` detects it on every buffer; pin it when you know it — see [Notes](#notes) |
 | `--save` | off | Write the transcript to a text file |
 | `--output` | auto-named | Transcript path; with `--save` and no name, defaults to `transcript_YYYYmmdd_HHMMSS.txt` |
@@ -411,7 +411,8 @@ panel" rather than "no transcription" when either is missing.
 
 ## Models
 
-- **GPU (whisper-server):** `ggml-base-q5_1.bin` from [ggerganov/whisper.cpp on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main) is the default. Other sizes work too (`medium`, `large-v3-turbo`, ...) — drop the file in `_models\` and pass its filename: `start_whisper_server.cmd ggml-medium-q5_0.bin`. Smaller/more-quantized models transcribe faster, which matters: if inference takes longer than `--slide`, the script starts skipping audio to stay live.
+- **GPU (whisper-server):** `ggml-base-q5_1.bin` from [ggerganov/whisper.cpp on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main) is the default. Other sizes work too (`medium`, `large-v3`, `large-v3-turbo`, ...) — drop the file in `_models\` and pass its filename: `start_whisper_server.cmd ggml-medium-q5_0.bin`. Smaller/more-quantized models transcribe faster, which matters: if inference takes longer than `--slide`, the script starts skipping audio to stay live.
+- **`large-v3-turbo` cannot translate.** It is a distilled *transcription* model — four decoder layers instead of thirty-two — and it accepts the translate task and then decodes the audio in its own language anyway. Measured against a live `whisper-server`: with `-l ja -tr`, `ggml-large-v3-turbo-q8_0.bin` returns Japanese while `ggml-large-v3.bin` and `ggml-base-q5_1.bin` return English for the identical request. Use `large-v3`, `medium` or `base` with `--translate`; turbo is fine for same-language captions. The app detects this and says so in the log rather than labelling the caption as English — see the `--translate` flag.
 - **CPU (Faster-Whisper):** medium model recommended (`int8`). Path configurable via `--model`.
 
 ## Useful Links

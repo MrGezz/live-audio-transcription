@@ -41,7 +41,8 @@ import settings as settings_mod
 from buffering import create_strategy
 from speech_gate import SpeechGate
 from transcript import TranscriptWriter
-from whisper_backends import DECODE_OPTIONS, BackendError, create_backend
+from whisper_backends import (DECODE_OPTIONS, BackendError,
+                              create_backend, looks_untranslated)
 
 SAMPLERATE = 16000
 
@@ -115,6 +116,7 @@ class Pipeline(object):
         self._last_gate = None
         self._drained = False
         self._recent_languages = collections.Counter()
+        self._translate_warned = False
         self._stats = _new_stats()
 
     # -- plumbing ---------------------------------------------------------
@@ -319,6 +321,10 @@ class Pipeline(object):
     # -- component construction -------------------------------------------
     def _build_backend(self):
         s = self.settings
+        # A new backend is a new model, so it earns a fresh chance to say it
+        # cannot translate - otherwise switching off the turbo model would
+        # never clear the warning, and switching TO one would never raise it.
+        self._translate_warned = False
         try:
             self.backend = create_backend(
                 s["backend"], server_url=s["server_url"],
@@ -560,7 +566,7 @@ class Pipeline(object):
             "id": self._next_id,
             "text": text,
             "language": language,
-            "translated": bool(s["translate"]),
+            "translated": self._translated(segment, text, language),
             "words": _attr(segment, "words", None) or [],
             "probability": _attr(segment, "probability", None),
             "no_speech_prob": _attr(segment, "no_speech_prob", None),
@@ -581,6 +587,60 @@ class Pipeline(object):
         if self.writer is not None:
             self.writer.write(entry)
         self.emit("transcript", entry)
+
+    def _translated(self, segment, text, language):
+        """
+        Whether this caption IS English - not whether English was asked for.
+
+        This was `bool(settings["translate"])`, the checkbox, and that made the
+        front ends' "ja -> EN" tag a restatement of the request: it could not
+        disagree with itself, so a model that ignored the translate task
+        produced Japanese captions labelled as English and no code path
+        anywhere could notice. Measured now, from two independent pieces of
+        evidence, and only ever downgraded - a caption is called translated
+        only when nothing says otherwise:
+
+        1. What the backend says it did (`Segment.translated`). whisper-server
+           reports it per response and overrides the request itself for an
+           English-only model; faster-whisper echoes the task it ran.
+        2. What came back. A caption still in the source language's script
+           cannot be an English translation, whatever either side claims -
+           see looks_untranslated, which is also the ONLY thing that catches a
+           model that accepts the translate task and quietly ignores it.
+
+        The gap in (2) is stated where it matters: a Latin-script source
+        decoded rather than translated reads as English here, so French
+        captions can still slip through labelled as a translation. (1) still
+        covers those whenever the backend answers honestly.
+        """
+        if not self.settings["translate"]:
+            return False
+        if getattr(segment, "translated", None) is False:
+            self._warn_translate(
+                "the engine reports it transcribed this window rather than "
+                "translating it. An English-only model (ggml-*.en) cannot "
+                "translate and whisper-server turns the option off by itself "
+                "when one is loaded.")
+            return False
+        if looks_untranslated(text):
+            self._warn_translate(
+                "the caption came back in {0}. The model accepted the "
+                "translate task and decoded the audio anyway, which is what a "
+                "*-turbo model does - it is a transcription-only distillation. "
+                "Load ggml-large-v3, medium or base to translate.".format(
+                    language if language and language != "??"
+                    else "the source language"))
+            return False
+        return True
+
+    def _warn_translate(self, why):
+        """Say it once per backend, not once per caption."""
+        if self._translate_warned:
+            return
+        self._translate_warned = True
+        self.log("warn", "Translation is on but " + why + " Captions are "
+                         "labelled with the language they are actually in, "
+                         "so the '-> EN' tag is gone until this is fixed.")
 
     def _report_perf(self, infer_s, decision):
         s = self.settings

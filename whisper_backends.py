@@ -102,6 +102,53 @@ DETECTION_CANDIDATES = 5
 MIN_SERVER_SAMPLES = SAMPLERATE // 4
 
 
+# Scripts Whisper emits only when it TRANSCRIBED. An English translation
+# does not contain kana, hanzi, hangul, Cyrillic, Greek, Hebrew, Arabic,
+# Devanagari or Thai - so one such character in a caption that was supposed to
+# be translated is proof the model decoded the audio instead. CJK punctuation
+# (U+3000-303F) is deliberately NOT here: it turns up on its own in fragments
+# that carry no letters, and one stray comma is not evidence of anything.
+_SOURCE_SCRIPTS = (
+    (0x0370, 0x03FF),   # Greek
+    (0x0400, 0x04FF),   # Cyrillic
+    (0x0590, 0x05FF),   # Hebrew
+    (0x0600, 0x06FF),   # Arabic
+    (0x0700, 0x074F),   # Syriac
+    (0x0900, 0x097F),   # Devanagari
+    (0x0E00, 0x0E7F),   # Thai
+    (0x3040, 0x30FF),   # Hiragana, Katakana
+    (0x3400, 0x4DBF),   # CJK extension A
+    (0x4E00, 0x9FFF),   # CJK unified ideographs
+    (0xA960, 0xA97F),   # Hangul jamo extended A
+    (0xAC00, 0xD7AF),   # Hangul syllables
+    (0xF900, 0xFAFF),   # CJK compatibility ideographs
+)
+
+
+def looks_untranslated(text):
+    """
+    Did this caption come back in the source language despite --translate?
+
+    Only ever answers YES with certainty. A caption in one of the scripts
+    above cannot be the English translation it claims to be, and that is the
+    whole test - there is no attempt to judge whether English prose is a
+    translation or a transcription of English audio, because nothing can.
+
+    So it catches exactly the case that is worth catching and is otherwise
+    invisible: a model that accepts the translate task and ignores it. It
+    cannot catch a Latin-script source - French decoded as French reads as
+    English to this function - and that is stated wherever its answer is used.
+    """
+    for char in text or "":
+        point = ord(char)
+        for low, high in _SOURCE_SCRIPTS:
+            if low <= point <= high:
+                return True
+            if point < low:
+                break        # ranges are ascending; nothing further can match
+    return False
+
+
 def is_marker(text):
     """
     Is this segment a non-speech marker rather than something anyone said?
@@ -383,16 +430,26 @@ class Segment(tuple):
     .probability is the mean of the word probabilities, which is the number
     worth showing per line - avg_logprob is Whisper's own score, but it is a
     log, so it does not average into anything a reader can act on.
+
+    .language is the language of the AUDIO, never of .text: with translation
+    on, a Japanese window still reports "ja" and the text is meant to be
+    English. Whether it actually is, is .translated.
     """
 
     # No __slots__ here: CPython rejects a non-empty __slots__ on subclasses
     # of variable-length built-ins such as tuple.
 
     def __new__(cls, text, language, words=None, start=None, end=None,
-                no_speech_prob=None, avg_logprob=None):
+                no_speech_prob=None, avg_logprob=None, translated=None):
         segment = tuple.__new__(cls, (text, language))
         segment.text = text
         segment.language = language
+        # What the backend says it DID, not what it was asked to do: True it
+        # translated, False it transcribed, None it did not say. Until this
+        # existed the only answer available downstream was the request, so a
+        # backend that ignored a translate request produced a caption labelled
+        # as English with the source language in it and nothing could tell.
+        segment.translated = translated
         segment.words = list(words or [])
         segment.start = start
         segment.end = end
@@ -699,9 +756,31 @@ class ServerBackend(object):
                                          _candidates(probabilities))
         return self.language or reported or "??"
 
+    @staticmethod
+    def _read_task(payload):
+        """
+        Whether the server says it translated, from verbose_json's "task".
+
+        The server writes this AFTER its own overrides, which is what makes it
+        worth reading rather than assuming: load an English-only model and
+        whisper-server sets translate=false itself, logging "model is not
+        multilingual, ignoring language and translation options" to its own
+        console where nothing here can see it - and then answers
+        "task": "transcribe" in the very response this parses. It also catches
+        a request the server declined to parse: its bool test is
+        case-SENSITIVE ("true"/"1"/"yes"/"y" only), so a client sending "True"
+        gets a silent transcription, and this notices.
+
+        None when the field is absent - an older server, or a response_format
+        that does not carry it - which means "no evidence", not "no".
+        """
+        task = payload.get("task")
+        return None if task is None else (str(task) == "translate")
+
     def _read_segments(self, payload, lang):
         """The response's segments, as Segments carrying their word timings."""
         results = []
+        translated = self._read_task(payload)
         segments = payload.get("segments")
         if segments:
             for seg in segments:
@@ -714,12 +793,14 @@ class ServerBackend(object):
                         end=_float(seg.get("end")),
                         no_speech_prob=_float(seg.get("no_speech_prob")),
                         avg_logprob=_float(seg.get("avg_logprob")),
+                        translated=translated,
                     ))
         else:
             text = (payload.get("text") or "").strip()
             if text and not is_marker(text):
                 results.append(Segment(text, lang, start=0.0,
-                                       end=_float(payload.get("duration"))))
+                                       end=_float(payload.get("duration")),
+                                       translated=translated))
         return results
 
 
@@ -876,6 +957,17 @@ class LocalBackend(object):
         # backends are guaranteed to report in one vocabulary.
         lang = (self.language
                 or language_code(getattr(info, "language", None)) or "??")
+        # What faster-whisper says it RAN, in the same field the server path
+        # fills from verbose_json's "task", so both backends answer the same
+        # question and pipeline._translated does not have to know which one it
+        # is talking to. faster-whisper echoes the request rather than
+        # overriding it the way whisper-server does for an English-only model,
+        # so this is a guarantee rather than a correction - but a caption that
+        # comes back in the source language anyway is still caught downstream,
+        # by what is in the text.
+        ran = getattr(getattr(info, "transcription_options", None),
+                      "task", None)
+        translated = None if ran is None else (str(ran) == "translate")
         results = []
         for segment in segments:
             # Draining this generator is what actually runs inference, so
@@ -890,6 +982,7 @@ class LocalBackend(object):
                     no_speech_prob=_float(
                         getattr(segment, "no_speech_prob", None)),
                     avg_logprob=_float(getattr(segment, "avg_logprob", None)),
+                    translated=translated,
                 ))
         # Same shape as the server path, through the same helper, so a mid-
         # session fallback from GPU to CPU does not change what the readout
