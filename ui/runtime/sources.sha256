@@ -1,0 +1,4 @@
+# sha256 over ui/ *.cs, *.xaml and *.csproj - written by build_ui.cmd
+# after a successful publish. tests/test_ui_stamp.py fails when this
+# disagrees with the working tree, which means ui/runtime is stale.
+9619ddeeac5077bf9606d6f4af7acb21896ded6c9e55d59934c8db9f361adb32

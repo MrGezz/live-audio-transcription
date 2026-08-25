@@ -10,6 +10,10 @@ so a regression on either side of the bridge fails here.
 
 Needs pythonnet, the .NET Desktop Runtime and a built ui/runtime: it loads
 the artifact that ships, so after a ui/ change run `.\\build_ui.cmd` first.
+That is checked rather than trusted: build_ui.cmd stamps ui/runtime with a
+hash of its sources, and this module skips when the stamp disagrees, since
+a green run against a stale assembly would say the opposite of the truth.
+tests/test_ui_stamp.py is the part that fails.
 Skips itself otherwise, as test_real_model.py skips without the model. The
 window opens on screen for a few seconds:
 
@@ -31,6 +35,7 @@ if TOOLS not in sys.path:
     sys.path.insert(0, TOOLS)
 
 import settings as settings_mod  # noqa: E402
+import uihash  # noqa: E402
 import wpf_panel  # noqa: E402
 
 APP = None
@@ -204,6 +209,15 @@ def setUpModule():
     global APP, PANEL, TMP, _SAVED_DIRS, _SAVED_STATE
     if not wpf_panel.available():
         raise unittest.SkipTest("no ui/runtime - run .\\build_ui.cmd first")
+    if not uihash.is_current():
+        # Everything here loads the shipped assembly rather than building
+        # one, so against a stale DLL these tests are not wrong - they are
+        # meaningless, and a green run would say the opposite. Skipping is
+        # the honest answer; tests/test_ui_stamp.py is the half that fails,
+        # and it needs no .NET, so it runs even where this module cannot.
+        raise unittest.SkipTest(
+            "ui/runtime is stale - ui/ sources have changed since it "
+            "was built. Run .\\build_ui.cmd, then rerun.")
     try:
         wpf_panel._load_clr()
     except wpf_panel.PanelUnavailable as e:
