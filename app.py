@@ -472,10 +472,20 @@ class App(object):
                       s["web_host"], s["web_port"], e))
             return
         print("Control panel: {0}".format(self.server.url))
-        if s["web_host"] not in ("127.0.0.1", "localhost") and not s["web_token"]:
-            print("[web] WARNING: listening on {0} with no access token. "
-                  "Anyone on this network can read the transcript and change "
-                  "settings.".format(s["web_host"]))
+        # Warn whenever the listener is exposed to the network, not just when
+        # no token is set. A token gates access but does not encrypt; the token
+        # and transcript travel in the URL on the unencrypted wire. Even a token
+        # user who stops at the warning is still exposed - they need a TLS proxy.
+        if s["web_host"] not in ("127.0.0.1", "localhost"):
+            if s["web_token"]:
+                print("[web] WARNING: listening on {0} with access token. The "
+                      "token gates access but does not encrypt the transcript or "
+                      "token itself - both appear in the URL on the wire. Use a "
+                      "reverse proxy for TLS.".format(s["web_host"]))
+            else:
+                print("[web] WARNING: listening on {0} with no access token. "
+                      "Anyone on this network can read the transcript and change "
+                      "settings.".format(s["web_host"]))
         if s["web_open"]:
             threading.Timer(0.4, webbrowser.open, (self.server.url,)).start()
 

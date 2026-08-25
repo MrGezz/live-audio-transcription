@@ -87,8 +87,8 @@ here only as the record of what each step was scoped as.
 shared row chrome; `FieldTemplateSelector` maps `kind` -> template and throws
 on an unmapped one; `SettingsVm.KnownKinds` refuses it at startup too, so an
 eighth kind fails loudly twice instead of rendering as a TextBox that writes
-the wrong JSON type. The pane is 8 groups over 61 fields (60 plus the new
-`wpf` toggle itself) and nothing in the XAML names a setting.
+the wrong JSON type. The pane is 8 groups over 65 fields and nothing in
+the XAML names a setting.
 
 - Every numeric field in the live schema declares both bounds (verified),
   so int and float render as slider + NumberBox with no fallback shape.
@@ -175,7 +175,7 @@ actionable line and transcription carries on.
 `ui/tools/soak.py`: synthetic meter at 8 Hz plus transcript, state, log,
 perf and engine events through the real bridge, with a Python thread
 hammering `ApplySettings` (and its settings echo — `HydrateSettings` plus
-`Refilter` over all 61 fields is the heaviest binding path the panel has).
+`Refilter` over all 65 fields is the heaviest binding path the panel has).
 Private bytes, handle count, working set and managed heap sampled every 30 s
 from the CLR itself; the verdict compares the last quarter against the
 second. If the full run fails, the View layer moves behind a WebSocket
@@ -249,7 +249,7 @@ mortem, neither of them a leak:
 the leak class that actually threatens this design — per-event, a handler
 never unhooked or a container never released — comes from event *count*, and
 the rates are fixed. The aborted run bounded that class hard on its own:
-13,939 `ApplySettings` round trips, each rehydrating all 61 `FieldVm`s,
+13,939 `ApplySettings` round trips, each rehydrating all 61 `FieldVm`s (since grown to 65),
 moved the handle count by 8. That is under 0.001 handles per event, three
 orders of magnitude below anything that matters, and four hours only
 multiplies the evidence by 2.7. Duration buys sensitivity only against
@@ -271,7 +271,7 @@ Verdict, 2026-08-23 09:33: **PASS** — private bytes 467.2 → 473.7 MB
 (+1.4 %, against a 10 % threshold) and handles 757 → 675, i.e. *down* 82.
 Over the run the bridge carried 42,120 `ApplySettings` round trips (34,715
 from the Python hammer, 7,405 the CLR → Python direction), each rehydrating
-all 61 `FieldVm`s, with every tab realised and cycled. The binding layer
+all 61 `FieldVm`s (since grown to 65), with every tab realised and cycled. The binding layer
 does not leak, and the View layer stays in C#: the WebSocket-client fallback
 in step 1 is not needed.
 

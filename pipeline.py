@@ -116,6 +116,11 @@ class Pipeline(object):
         self._started_at = None
         self._last_error = ""
         self._consecutive_errors = 0
+        # Two separate counters keep worker-loop noise from swallowing the
+        # first transcription failure. A shared counter meant 3 worker errors
+        # would silence the first "Transcription failed" line until the shared
+        # counter reached 10, ~14 s of captionless operation at --slide 2.
+        self._worker_errors = 0
         self._last_meter = 0.0
         self._last_skip_report = 0.0
         self._last_perf_report = 0.0
@@ -225,6 +230,7 @@ class Pipeline(object):
         with self._lock:
             self._stats = _new_stats()
             self._consecutive_errors = 0
+            self._worker_errors = 0
             self._last_error = ""
             self._drained = False
             self._last_gate = None
@@ -539,11 +545,11 @@ class Pipeline(object):
                 # capture thread filling memory behind a UI that still looks
                 # alive. The overlay's watchdog exists because this used to
                 # happen.
-                self._consecutive_errors += 1
-                if self._consecutive_errors <= 3 \
-                        or self._consecutive_errors % 25 == 0:
+                self._worker_errors += 1
+                if self._worker_errors <= 3 \
+                        or self._worker_errors % 25 == 0:
                     self.log("error", "Worker error ({0} in a row): {1}".format(
-                        self._consecutive_errors, e))
+                        self._worker_errors, e))
                 time.sleep(0.1)
 
     def _tick(self):

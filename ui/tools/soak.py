@@ -15,7 +15,7 @@ What it drives, and why these rates:
   engine       0.1/s  busy flips through the whole can-execute fan-out
   ApplySettings hammered from a plain Python thread, every 150 ms, with the
                       settings echo pushed after each - HydrateSettings plus
-                      Refilter across all 61 FieldVms, which is the heaviest
+                      Refilter across all 65 FieldVms, which is the heaviest
                       binding path the panel has
   C# edits       2/s  FieldVm setters on the dispatcher, so SettingsVm's
                       debounce -> Flush -> IEngineBridge.ApplySettings runs:
@@ -39,7 +39,8 @@ used to default to. Two different leak classes need two different arguments:
   with the clock, and the event rates above are fixed. 90 minutes drives
   ~43,000 meter frames, ~36,000 hammer round trips, ~10,800 C#-side edits
   and 180 tab switches. The 2026-08-23 run bounded this class hard: 13,939
-  ApplySettings round trips - each rehydrating all 61 FieldVms - moved the
+  ApplySettings round trips - each rehydrating all 61 FieldVms, the count at
+  the time - moved the
   handle count by 8, so under 0.001 handles and a few hundred bytes per
   event. Four hours multiplies the evidence by 2.7 against a bound already
   three orders of magnitude below anything that matters.

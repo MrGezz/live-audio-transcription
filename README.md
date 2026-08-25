@@ -23,22 +23,27 @@ This also adds **GPU support via whisper.cpp** — Vulkan for AMD/Intel, CUDA fo
                  └───────────────── pipeline.py ◄────────────────────────┘   (Vulkan/CUDA GPU)
                                         │                                └─► faster-whisper (CPU
                                         │                                    fallback, automatic)
-                    ┌───────────────────┼───────────────────┐
-                    ▼                   ▼                   ▼
-                 console            overlay.py         wsserver.py ──► browser control panel
-                                    (Tk captions)      (HTTP + WS)      (settings, meters, export)
+                    ┌───────────────────┼───────────────────┬───────────────────┐
+                    ▼                   ▼                   ▼                   ▼
+                 console            overlay.py         wsserver.py         wpf_panel.py
+                                    (Tk captions)      (HTTP + WS)         (pythonnet)
+                                                            │                   │
+                                                            ▼                   ▼
+                                                    browser control panel  ui/ (WPF desktop panel)
 ```
 
-All three outputs subscribe to the same event stream, and only the browser can
-talk back. `settings.py` declares every option once — the CLI flags, the web
-form and the validation are all generated from it.
+All four outputs subscribe to the same event stream, and two of them can talk
+back: the browser over HTTP and a WebSocket, which is why it needs a port and a
+token, and the desktop panel directly through `IEngineBridge` — no socket, no
+port, no token. `settings.py` declares every option once — the CLI flags, both
+panels' forms and the validation are all generated from it.
 
 ## Features
 
 - Live transcription of system audio via **WASAPI loopback of any output device** (headset, speakers - no Stereo Mix needed), classic Stereo Mix / mic input (`--capture input`), a **WAV file**, or audio **streamed from a browser** (a phone in the room, a laptop elsewhere, a shared tab).
 - **GPU acceleration via whisper.cpp** — Vulkan (AMD/Intel) or CUDA (NVIDIA) — (`--backend server`).
 - Automatic backend selection with CPU fallback (`--backend auto`, default) — if the GPU server dies mid-session it drops to CPU rather than going silent, and returns to GPU on its own once the server is back.
-- **Browser control panel** (`--web`) — every one of the 60
+- **Browser control panel** (`--web`) — every one of the 65
  options, changeable *while it runs*, with live meters, word-confidence colouring and a benchmark you can apply with one click. See [Web UI](#web-ui).
 - **Per-word confidence** — both backends report the probability of every word, so a caption that reads fluently but was a guess does not look like one the model was sure of. It also makes `.srt` / `.vtt` export possible from any session.
 - Optional translation to English (`--translate`) — passed per-request, no server restart needed. A caption is only labelled as translated when it actually came back translated: a model that ignores the task (`large-v3-turbo` does) gets one warning in the log and keeps its own language tag.

@@ -685,6 +685,33 @@ class WSServer(object):
             self._log("warn", "bad websocket key from {0}".format(remote))
             await _send_http(writer, 400, b"bad Sec-WebSocket-Key")
             return None
+        # If an Origin header is present, its host:port must match the Host
+        # header. Scheme is deliberately not compared - Host carries none, so
+        # there is nothing to compare it against.
+        # Non-browser clients send no Origin and are allowed;
+        # browsers always send one, so this closes a same-origin attack vector
+        # in the already-warned case (non-loopback bind with no token).
+        origin = headers.get("origin", "").lower()
+        if origin:
+            host = headers.get("host", "").lower()
+            # Origin looks like "http://example.com:8770"; Host is "example.com:8770".
+            # Extract scheme://host:port from Origin and compare to Host.
+            try:
+                parsed_origin = urllib.parse.urlparse(origin)
+                origin_netloc = parsed_origin.netloc.lower()
+                if origin_netloc != host:
+                    self._log("warn", "403 for websocket from {0} (origin {1} "
+                              "does not match host {2})".format(
+                                  remote, origin, host))
+                    await _send_http(
+                        writer, 403,
+                        b"forbidden: origin mismatch")
+                    return None
+            except Exception:
+                # A malformed Origin, and the fail-secure path is to reject.
+                self._log("warn", "bad origin from {0}".format(remote))
+                await _send_http(writer, 403, b"forbidden: invalid origin")
+                return None
         accept = base64.b64encode(hashlib.sha1(
             (key + _GUID).encode("ascii")).digest()).decode("ascii")
         writer.write(("HTTP/1.1 101 Switching Protocols\r\n"
