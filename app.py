@@ -42,6 +42,7 @@ import webbrowser
 
 import audio_sources
 import console
+import model_fetch
 import settings as settings_mod
 from pipeline import Pipeline
 
@@ -88,6 +89,9 @@ class App(object):
         # Set the moment whisper-server first answers, which is where its
         # output stops being worth showing - see _pump_server_output.
         self._server_ready = threading.Event()
+        # One model download at a time, and a lock rather than a flag because
+        # the release has to be reliable from a daemon thread's finally.
+        self._download_lock = threading.Lock()
         self._start_server_at_boot = bool(start_server)
         self._engine_poll_started = False
         self._stop = threading.Event()
@@ -545,6 +549,12 @@ class App(object):
             "status": self.pipeline.status(),
             "devices": self._devices,
             "models": self._list_models(),
+            # What COULD be here, next to what is. Sent at connect rather than
+            # fetched on demand for the same reason the schema is: the panel
+            # draws its model list once, and a picker that has to ask before it
+            # can offer anything shows an empty list on the tab that explains
+            # how to fill it.
+            "modelCatalog": model_fetch.catalog(),
             "presets": self._list_presets(),
             "history": self.pipeline.history(200),
             "engine": dict(self._engine),
@@ -615,6 +625,11 @@ class App(object):
             ok()
         elif name == "models":
             client.send({"type": "models", "data": self._list_models()})
+        elif name == "model_catalog":
+            client.send({"type": "model_catalog",
+                         "data": model_fetch.catalog()})
+        elif name == "model_download":
+            ok(self._model_download(args))
         elif name == "history":
             client.send({"type": "history", "data": self.pipeline.history(
                 int(args.get("limit", 500)))})
@@ -916,6 +931,66 @@ class App(object):
             pass
         return {"ggml": ggml, "faster_whisper": faster,
                 "dir": os.path.relpath(MODEL_DIR, HERE)}
+
+    def _model_download(self, args):
+        """
+        Fetch a catalogued model into _models\\, off the loop.
+
+        Deliberately NOT through _lifecycle. That holds one slot for the whole
+        of a command so two cannot overlap, which is right for start/stop -
+        they take seconds. large-v3 is 3 GB: on a normal line that is minutes,
+        and holding the lifecycle slot for it would mean the panel could not
+        stop the pipeline while a download ran. So this gets a slot of its own,
+        and only downloads contend for it.
+
+        The name is checked before the thread starts, so a bad one is an error
+        the caller sees in the ack rather than a line in the log a moment
+        later. model_fetch.resolve is what makes that check safe to run on a
+        value from a browser - see its docstring.
+        """
+        kind = str(args.get("kind", ""))
+        name = str(args.get("name", ""))
+        try:
+            model_fetch.resolve(kind, name)
+        except model_fetch.FetchError as e:
+            return {"error": str(e)}
+        if not self._download_lock.acquire(blocking=False):
+            return {"error": "A model is already downloading. Only one at a "
+                             "time - two large models over one line finish no "
+                             "sooner and fill the disk twice as fast."}
+        threading.Thread(target=self._download_worker, args=(kind, name),
+                         name="model-download", daemon=True).start()
+        return {"started": name}
+
+    def _download_worker(self, kind, name):
+        """The download itself, plus the list refresh that makes it visible."""
+        try:
+            self.pipeline.log("info", "Downloading {0} into _models - this "
+                                      "runs in the background and the pipeline "
+                                      "keeps working.".format(name))
+            path = model_fetch.download(
+                kind, name,
+                report=lambda msg: self.pipeline.log(
+                    "info", "{0}: {1}".format(name, msg)))
+            self.pipeline.log("info", "{0} is ready at {1}. It is in the model "
+                                      "picker now.".format(
+                                          name, os.path.relpath(path, HERE)))
+        except model_fetch.FetchError as e:
+            self.pipeline.log("error", str(e))
+        except Exception as e:                      # noqa: BLE001 - see below
+            # Broad on purpose. This is the top of a daemon thread: anything
+            # that escapes here is lost silently and the panel waits forever
+            # on a download that has already died.
+            self.pipeline.log("error", "Downloading {0} failed: {1}".format(
+                name, e))
+        finally:
+            self._download_lock.release()
+            # Both, and in this order: the pickers read the "models" payload
+            # and the Engine tab's own list is part of the engine payload, so a
+            # model that arrived is otherwise invisible until a reconnect.
+            self._notify("models", self._list_models())
+            self._notify("model_catalog", model_fetch.catalog())
+            self._refresh_engine()
 
     def _server_endpoint(self):
         """(host, port) of the whisper-server this session is configured for."""
@@ -1237,10 +1312,33 @@ class App(object):
             return
         pid = self._server_pid()
         if pid is not None:
-            self.pipeline.log("warn", "Port {0} is already held by PID {1} "
-                                      "({2}). Use Restart to replace it."
-                              .format(port, pid,
-                                      self._image_name(pid) or "unknown"))
+            # Whose port it is decides which advice is right, and getting this
+            # wrong is worse than saying nothing: "use Restart" sends the user
+            # to a button that refuses to kill a foreign process (see
+            # _engine_stop), so on a clash they press it, nothing happens, and
+            # the panel has told them to do the one thing that cannot work.
+            #
+            # A clash here is the normal case, not an exotic one. 8080 - which
+            # this project defaulted to until the port moved to 8771 - is taken
+            # on a normal desktop by Autodesk Revit among others, and a bind
+            # failure names neither the port nor the program that holds it.
+            image = self._image_name(pid)
+            if image.lower().startswith(SERVER_IMAGE_PREFIX):
+                self.pipeline.log(
+                    "warn", "Port {0} is already held by a whisper server "
+                            "(PID {1}, {2}). Use Restart to replace it."
+                            .format(port, pid, image))
+            else:
+                self.pipeline.log(
+                    "error",
+                    "Port {0} is held by PID {1} ({2}), which is not a whisper "
+                    "server - so this is a port clash, not a dead engine. "
+                    "Restart cannot help: it refuses to kill a program it does "
+                    "not recognise. Either close {2}, or give whisper-server a "
+                    "port of its own by editing Server URL in Settings - the "
+                    "launcher takes its port from there."
+                    .format(port, pid,
+                            image or "a process this account cannot identify"))
             return
         # Relative, with cwd set to the project - never an absolute path. The
         # .cmd resolves _whisper.cpp and _models relative to itself, and
@@ -1273,9 +1371,18 @@ class App(object):
         # model name, the path checks and the STATUS_ILLEGAL_INSTRUCTION
         # explanation, and calling the exe would mean a second copy of all
         # three here.
-        cmd = ["cmd", "/c", os.path.join(".", os.path.basename(SERVER_CMD))]
-        if model:
-            cmd.append(model)
+        # The port goes with it, from server_url, so the setting the panels
+        # show is the port the server actually binds. Before this the .cmd
+        # owned a second copy of it and the two could disagree silently: the
+        # setting said one port, the server listened on 8080, and the panel
+        # reported an engine that was running as not running.
+        #
+        # model is passed even when empty - it is argument 1 and the port is
+        # argument 2, so the placeholder has to be there for the port to land
+        # in the right slot. The .cmd already treats an empty argument 1 as
+        # "use the default model", which is the behaviour that wants keeping.
+        cmd = ["cmd", "/c", os.path.join(".", os.path.basename(SERVER_CMD)),
+               model or "", str(port)]
         self._server_ready.clear()
         try:
             self._server_proc = subprocess.Popen(

@@ -18,7 +18,21 @@ REM    start_whisper_server.cmd ggml-base-q5_1.bin
 set MODEL=%~dp0_models\%~1
 if "%MODEL%"=="%~dp0_models\" set MODEL=%~dp0_models\ggml-base-q5_1.bin
 set HOST=127.0.0.1
-set PORT=8080
+REM  Override the port by passing it as argument 2:
+REM    start_whisper_server.cmd ggml-base-q5_1.bin 8771
+REM  app.py always passes it, taken from the server_url setting, so that one
+REM  setting is the only place the port is written down. Typed by hand with no
+REM  argument you get the same 8771 the setting defaults to.
+REM
+REM  NOT 8080, which is whisper.cpp's own default: 8080 is the standard HTTP
+REM  alternate port and it is contended on a normal desktop. Autodesk Revit
+REM  binds it at startup, and the clash does not announce itself - the server
+REM  exits during bind and every symptom points at the model or the GPU.
+REM
+REM  Flat, outside any ( ) block: %VAR% inside a block is substituted when cmd
+REM  PARSES the block, so a value set in one is not readable in the same one.
+set PORT=%~2
+if "%PORT%"=="" set PORT=8771
 
 REM  Expansions inside these ( ) blocks MUST stay quoted: cmd substitutes
 REM  %VAR% while parsing the whole block, so a ")" from a path such as

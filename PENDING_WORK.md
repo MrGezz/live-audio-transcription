@@ -13,12 +13,80 @@ arguments are written down so none of it has to be re-derived.
 
 ## Remaining work
 
-**Nothing open.** The five items this section has carried — four on 2026-08-23
-morning, one opened that evening while fixing `REMOTE_LOCKED` — are all closed:
-four done, one decided. Step 10 records the first four. The last was the
-untrusted-read-path gap, closed the same evening by `safe_paths.py` and pinned
-by `tests/test_safe_paths.py`. Anything new goes here first, with what "done"
-looks like, before it goes anywhere else in this file.
+**One open, and it is a clock rather than a task.** Everything else this file,
+`README.md` and `UPSTREAM_MINING.md` had deferred is now either done or
+recorded as decided. The five items this section used to carry were closed on
+2026-08-23; the sweep on **2026-08-31** went through every remaining "not yet",
+"one day" and "deliberately not" across all four documents and settled each
+one. Anything new goes here first, with what "done" looks like, before it goes
+anywhere else in this file.
+
+### Still open
+
+- **A multi-day soak has never been run.** The 90-minute soak bounds drift down
+  to about 36 MB/h; nothing bounds it over days. *Done* = `soak.py --minutes
+  1440` against the current `ui/runtime`, passing. It cannot be closed by
+  writing code — it needs a machine to sit still for a day — which is why it is
+  the only thing left here.
+
+### Closed on 2026-08-31
+
+- **The shipped `whisper-server.exe` predated whisper.cpp #3956.** Rebuilt from
+  `eacbd823` (v1.9.3-77), CUDA, for this machine only. See
+  `UPSTREAM_MINING.md`, which carries the build flags, why it must not ship,
+  and the MSVC-toolset trap that bites on a rebuild.
+- **The Lite script could not capture an output device.** It asks which capture
+  path to use now and defaults to WASAPI loopback, reusing
+  `audio_sources.LoopbackSource` rather than a second copy of it. Verified live
+  against the speakers with no Stereo Mix present.
+- **whisper-server sat on port 8080, which is contended.** Autodesk Revit binds
+  it at startup and the clash is silent — the server exits during bind and every
+  symptom points at the model or the GPU. Default moved to **8771**, next to the
+  browser panel's 8770. `start_whisper_server.cmd` takes the port as argument 2
+  and `app.py` passes it from `server_url`, so the setting is the only place the
+  port is written down; before this the `.cmd` held a second copy that could
+  disagree with it silently. `_engine_start` also tells a clash from a dead
+  engine now and stops advising Restart, which refuses to kill a foreign
+  process and so could never have helped.
+- **`server_model` had two editors.** One key, one control — see invariant 13
+  and `owner` in `settings.py`.
+- **`model` could not be chosen, only typed.** It is a picker over the
+  faster-whisper folders in `_models\`, and the **Get models** card on the
+  Engine tab is what puts a folder there. This also removed the last
+  name-based special case in the UI (invariant 13).
+- **Silero: v6.2 or faster-whisper's VAD?** Measured, and the answer is v6.2 —
+  see *Decisions already made*.
+
+### Recorded as decided, not deferred
+
+These read as open in the documents and were not. Each is a decision with a
+reason, and the reason is written down where the item lives; none of them is
+waiting on anything.
+
+- **No standalone remote WPF executable** (`PENDING_WORK.md`). A second full
+  client — 17 inbound message types, 16 commands, auth, reconnect. Cut from v1
+  deliberately; the browser panel already serves the remote case.
+- **Glassmorphism not ported to WPF.** WPF has no primitive that blurs the
+  app's own content. The agreed target is charcoal + cyan + Fluent depth.
+- **Light `--bg-2` disagrees with the IcZ theme guideline.** The panel follows
+  `webui/style.css` and the website. The guideline is a document outside this
+  repository and is its own to correct.
+- **`speech_pad_ms` not ported from faster-whisper.** This project sends
+  buffers whole; VAD timestamps only decide *whether* to send one, never where
+  to cut. It would become relevant only if the chunking strategy changed.
+- **`word_thold` not exposed.** Measured as having no effect — identical
+  per-word probabilities at 0.01, 0.5 and 0.9 over the same 36-word window. A
+  slider that moves nothing is worse than no slider.
+- **Server-side VAD not adopted.** This project gates *before* the HTTP
+  request, so a rejected buffer costs no round trip and no inference. Local
+  gating is strictly cheaper for a live pipeline.
+- **Diarization unusable.** whisper.cpp derives the speaker field from stereo
+  and every capture path here downmixes to mono first, so it would always
+  report one speaker. Needs a stereo capture path before the field means
+  anything.
+- **`--start-server` is deliberately not a `Field`.** Every Field draws a
+  control in both panels (invariant 13), and "start the server I am already
+  running inside of" cannot mean anything from inside a running session.
 
 ---
 
@@ -463,6 +531,35 @@ says at the pin which one it mirrors and why.
 ---
 
 ## Decisions already made
+
+**The gate stays on Silero v6.2, and faster-whisper's VAD was measured, not
+assumed.** The question was whether faster-whisper's own VAD is faster than
+running `_models\silero_vad_v6.2.onnx` through the gate, and if so to default
+to it. It is not, so the gate keeps v6.2. Same fixture
+(`tests/fixtures/speech_sample.wav`, 26.06 s, 814 frames), same onnxruntime
+1.29, same one-thread session options, best of five over a live-sized 4 s
+buffer:
+
+| path | per 4 s buffer | RTF | speech frames |
+|---|---|---|---|
+| gate on `silero_vad_v6.2.onnx` | 6.42 ms | 0.0016 | 623/814 (76.5 %) |
+| gate on faster-whisper's bundled `silero_vad_v6.onnx` | 5.69 ms | 0.0014 | 605/814 (74.3 %) |
+| `faster_whisper.vad.SileroVADModel` directly | 5.84 ms | 0.0015 | 605/814 (74.3 %) |
+
+0.6 ms apart on a 4000 ms buffer — 0.015 % of one buffer, against a gate that
+already costs 0.15 % of real time. There is no speed to win here, and v6.2
+finds 18 more speech frames (+3 %), which is the recall advantage
+`settings.py` already documents on the hard cases (fan hum, speech under hum).
+Trading measurable recall for unmeasurable speed is the wrong way round.
+
+The reason the two are so close is worth writing down, because it looks like
+it should not be: both are **h/c batched exports** with an identical
+interface — `input [seq_len, 576]`, `h`/`c` `[1,1,128]`, out
+`speech_probs`/`hn`/`cn` — so `SpeechGate` takes its `_probs_batched` path for
+each, one onnxruntime call for the whole buffer. The `state`-tensor export
+that `_probs_streaming` exists for is a *different* upstream export, and
+neither of these is it. Nothing needs compiling either way: the `.onnx` is a
+file, and onnxruntime arrives with faster-whisper.
 
 **WPF-UI comes from NuGet.** `<PackageReference Include="WPF-UI" Version="4.3.0" />`.
 Never a `ProjectReference` to a local wpfui checkout: every path in this

@@ -27,6 +27,7 @@ const S = {
   status: {},
   devices: { loopback: [], input: [], errors: [] },
   models: { ggml: [], faster_whisper: [] },
+  modelCatalog: { ggml: [], faster_whisper: [] },   // what COULD be fetched
   presets: [],
   engine: {},              // whisper-server as seen from the port, not guessed
   busy: '',                // the lifecycle command in flight, by name
@@ -150,12 +151,14 @@ function handle(type, data) {
       S.settings = data.settings;
       S.devices = data.devices || S.devices;
       S.models = data.models || S.models;
+      S.modelCatalog = data.modelCatalog || S.modelCatalog;
       S.presets = data.presets || [];
       S.engine = data.engine || {};
       S.busy = data.busy || '';
       buildControls();
       renderPresets();
       renderEngine();
+      fillDownloadModels();
       applyStatus(data.status || {});
       (data.history || []).forEach(e => addCaption(e, true));
       trimTranscript();
@@ -171,7 +174,8 @@ function handle(type, data) {
     case 'dropped': break;   // the duplicate filter working as intended
     case 'log': addLog(data.level, data.msg); break;
     case 'devices': S.devices = data; refreshControls(); toast('Devices rescanned', 'good'); break;
-    case 'models': S.models = data; refreshControls(); break;
+    case 'models': S.models = data; refreshControls(); fillDownloadModels(); break;
+    case 'model_catalog': S.modelCatalog = data; fillDownloadModels(); break;
     case 'presets': S.presets = data; renderPresets(); break;
     case 'engine':
       S.engine = data;
@@ -193,6 +197,7 @@ function handleAck(data) {
   if (data.saved) toast('Preset "' + data.saved + '" saved', 'good');
   if (data.deleted) toast('Preset "' + data.deleted + '" deleted');
   if (data.loaded) toast('Preset "' + data.loaded + '" loaded', 'good');
+  if (data.started) toast('Downloading ' + data.started + ' — progress is in the Log tab', 'good');
   if (data.presets) { S.presets = data.presets; renderPresets(); }
   // Lifecycle commands report through the log and through 'engine', not
   // through their ack: they finish seconds after it, and an ack that said
@@ -207,6 +212,14 @@ function buildControls() {
   S.fields.clear();
   const byGroup = new Map();
   S.schema.fields.forEach(f => {
+    /* owner names the surface that draws this field's control. Anything with
+       one is drawn there instead of here, so a key cannot end up with two
+       editors - which is what server_model had: a picker on the Engine tab
+       AND a row in this form, where changing it looked like it applied and
+       did not (rebuild="engine" - the running server cannot be told).
+       Skipped from the FORM only; the field is still in the schema, still in
+       S.settings, and still travels the one settings path. */
+    if (f.owner) return;
     if (!byGroup.has(f.group)) byGroup.set(f.group, []);
     byGroup.get(f.group).push(f);
   });
@@ -399,7 +412,11 @@ function choicesFor(f) {
     }
     return list;
   }
-  if (f.key === 'model') {
+  if (f.choices === 'faster_whisper_models') {
+    /* By the dynamic source, not by f.key === 'model' as this used to be:
+       `model` is a declared choice now, so the name-based exception that
+       SettingsVm.cs called "the one place a key is special-cased by name" is
+       gone from both panels at once. A folder, not a file - see settings.py. */
     const list = (S.models.faster_whisper || []).map(m => ({ value: m.path, label: m.name }));
     if (!list.some(c => c.value === S.settings.model)) list.unshift({ value: S.settings.model, label: S.settings.model });
     return list;
@@ -787,6 +804,36 @@ function fillEngineModels(models, current) {
   else if (current && models.some(m => m.name === current)) sel.value = current;
 }
 
+/* The catalog, filtered to the kind selected, with what is already here marked
+   as such rather than hidden: "already downloaded" is the answer to the
+   question the list is being read to settle, and removing those rows makes a
+   model that IS present look like one that cannot be had. */
+function fillDownloadModels() {
+  const kindSel = $('#dlKind');
+  const sel = $('#dlModel');
+  if (!kindSel || !sel) return;
+  const kind = kindSel.value || 'ggml';
+  const rows = (S.modelCatalog && S.modelCatalog[kind]) || [];
+  const sig = kind + '#' + rows.map(m => m.name + m.installed).join('|');
+  if (sel.dataset.sig === sig) return;
+  sel.dataset.sig = sig;
+  const cur = sel.value;
+  sel.innerHTML = '';
+  rows.forEach(m => {
+    const mb = m.size_mb ? '  (' + (m.size_mb >= 1000
+      ? (m.size_mb / 1000).toFixed(1) + ' GB' : m.size_mb + ' MB') + ')' : '';
+    const o = el('option', null, m.name + mb + (m.installed ? '  ✓ in _models' : '')
+      + (m.note ? '  — ' + m.note : ''));
+    o.value = m.name;
+    sel.append(o);
+  });
+  if (cur && rows.some(m => m.name === cur)) sel.value = cur;
+  const here = rows.filter(m => m.installed).length;
+  $('#modelsWho').textContent = rows.length
+    ? here + ' of ' + rows.length + ' already in _models'
+    : 'catalog not loaded yet';
+}
+
 function engineArgs() {
   return { model: $('#engineModel').value || '' };
 }
@@ -1161,6 +1208,17 @@ function wire() {
   $('#btnSessionRun').onclick = () => command(S.status.running ? 'stop' : 'start');
   $('#btnSessionRestart').onclick = () => command('restart');
   $('#btnReconnect').onclick = () => command('rebuild', { what: ['backend'] });
+
+  $('#dlKind').onchange = () => fillDownloadModels();
+  $('#btnDownload').onclick = () => {
+    const name = $('#dlModel').value;
+    if (!name) return toast('Nothing selected to download', 'warn');
+    /* The NAME, never a URL or a repo id - the server resolves it against its
+       own catalog (model_fetch.resolve) and derives every path from the row it
+       matched. A page that can be reached over the network does not get to say
+       "fetch this and write it into the program's folder". */
+    command('model_download', { kind: $('#dlKind').value, name });
+  };
 
   $('#btnEngineStart').onclick = () => command('whisper_server', Object.assign({ action: 'start' }, engineArgs()));
   $('#btnEngineRestart').onclick = () => command('whisper_server', Object.assign({ action: 'restart' }, engineArgs()));

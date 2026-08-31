@@ -255,6 +255,21 @@ def _bridge_class():
         def GetModelsJson(self):
             return json.dumps(self._app._list_models())
 
+        def GetModelCatalogJson(self):
+            import model_fetch
+
+            return json.dumps(model_fetch.catalog())
+
+        def DownloadModel(self, kind, name):
+            # Returns at once: _model_download validates the name here, on the
+            # dispatcher thread, and everything slow goes to its own daemon
+            # thread. Rule 1 of IEngineBridge - this call holds the GIL while
+            # it runs, and a 3 GB transfer on it would freeze the window for
+            # the whole download.
+            return json.dumps(
+                self._app._model_download({"kind": str(kind),
+                                           "name": str(name)}))
+
         def GetDevicesJson(self):
             import audio_sources
 

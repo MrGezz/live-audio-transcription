@@ -107,3 +107,10 @@ ui/runtime/*.pdb
 # tests skip themselves without it. Not committed: 800 KB of WAV, and it is
 # reproducible.
 tests/fixtures/
+
+# Claude Code's per-checkout state. settings.local.json is machine-local
+# permissions, and worktrees/ is where agent worktrees are created - both are
+# this checkout's business and neither belongs to a cloner. Covered here
+# rather than only in .git/info/exclude, which is local and is NOT shared, so
+# without this rule every clone rediscovers the same untracked noise.
+.claude/

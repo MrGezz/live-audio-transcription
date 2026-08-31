@@ -17,7 +17,7 @@ HTTP server (`whisper-server`). The Python scripts now talk to it automatically.
 ## Architecture
 
 ```
-Stereo Mix ─> live_transcription.py ─ HTTP (localhost:8080) ─> whisper-server.exe (Vulkan or CUDA)
+Stereo Mix ─> live_transcription.py ─ HTTP (localhost:8771) ─> whisper-server.exe (Vulkan or CUDA)
                      │                                                │
                      └── CPU faster-whisper fallback if server is down┘
                          (also if it goes down later - and back to GPU
@@ -97,7 +97,7 @@ Backend flags added by this setup:
 | Flag | Default | Purpose |
 |---|---|---|
 | `--backend` | `auto` | `server` (GPU) / `local` (CPU) / `auto` (switches between them as the server comes and goes) |
-| `--server-url` | `http://127.0.0.1:8080` | whisper-server address |
+| `--server-url` | `http://127.0.0.1:8771` | whisper-server address (not 8080 — contended on a normal desktop) |
 | `--model` | `_models\faster-whisper-medium` | CPU fallback model path |
 
 See the **All flags** table in [README.md](README.md) for the complete list —

@@ -24,9 +24,17 @@ namespace LiveTranscription.Ui.Settings;
 /// <para>
 /// The invariant to protect: adding a <c>Field(...)</c> to settings.py must
 /// make a control appear here with no edit to any C# or XAML file. Anything
-/// that special-cases a key by name is a hole in that, and there is exactly
-/// one such hole - <c>model</c>, see <see cref="SetModels"/> - which is
-/// inherited from the browser panel so the two agree.
+/// that special-cases a key by name is a hole in that, and there are now
+/// none: <c>model</c> was the last one and is a declared <c>choice</c> with a
+/// dynamic source, so <see cref="SetModels"/> finds both model lists by
+/// source rather than by name.
+/// </para>
+/// <para>
+/// A field can still decline to be drawn here, but it says so in the schema
+/// rather than in this file: <c>owner</c> names the surface that owns the
+/// control (see <see cref="FieldVm.Owner"/>), which is how <c>server_model</c>
+/// stopped having two editors. Both panels read that key, so neither can
+/// drift from the other about where a control lives.
 /// </para>
 /// </remarks>
 public sealed class SettingsVm : ViewModelBase
@@ -92,7 +100,7 @@ public sealed class SettingsVm : ViewModelBase
         private set => Set(ref _loaded, value);
     }
 
-    /// <summary>The 19 advanced fields are hidden until this is on.</summary>
+    /// <summary>Fields marked advanced in settings.py are hidden until this is on.</summary>
     public bool ShowAdvanced
     {
         get => _showAdvanced;
@@ -342,25 +350,23 @@ public sealed class SettingsVm : ViewModelBase
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <c>model</c> is declared in settings.py as a <c>path</c>, because on the
-    /// command line it is one. In a panel it is a picker over what is actually
-    /// in _models, and this is the one place a key is special-cased by name.
-    /// webui/app.js does the same thing for the same reason; the two panels
-    /// disagreeing about what the model field IS would be worse than the
-    /// special case.
-    /// </para>
-    /// <para>
-    /// <c>server_model</c> needs no such exception: it is declared a
-    /// <c>choice</c> with the dynamic source <c>ggml_models</c>, so it takes
-    /// the choice template on its own and is found here by that source rather
-    /// than by name. New dynamic lists should follow it, not <c>model</c>.
+    /// Both are found by their dynamic <c>ChoiceSource</c> -
+    /// <c>faster_whisper_models</c> and <c>ggml_models</c> - never by key.
+    /// <c>model</c> used to be the exception: it was declared a <c>path</c>,
+    /// because on the command line it is one, and both panels then
+    /// special-cased the literal name "model" to draw a picker instead. It is
+    /// a declared <c>choice</c> now, so that exception is gone from here and
+    /// from webui/app.js together, and the rule has no survivors: a dynamic
+    /// list is named by its source, and a new one needs no code in this file
+    /// beyond the block that fills it.
     /// </para>
     /// </remarks>
     public void SetModels(string modelsJson)
     {
         _models = Doc.Parse(modelsJson);
 
-        if (_byKey.TryGetValue("model", out FieldVm? model))
+        FieldVm? model = FieldWithSource("faster_whisper_models");
+        if (model is not null)
         {
             var folders = new List<ChoiceVm>();
             foreach (Doc m in _models["faster_whisper"].Items())
@@ -647,7 +653,13 @@ public sealed class SettingsVm : ViewModelBase
             int shown = 0;
             foreach (FieldVm f in g.Fields)
             {
-                bool visible = (!f.Advanced || _showAdvanced)
+                // Owner first: a field whose control belongs to another
+                // surface is never drawn here, whatever the search box or the
+                // Advanced switch say. Hidden from this FORM only - it stays
+                // in _byKey, so its value still arrives, still flushes and
+                // still feeds SetModels; only the duplicate widget is gone.
+                bool visible = f.Owner.Length == 0
+                               && (!f.Advanced || _showAdvanced)
                                && ConditionEvaluator.IsSatisfied(f.ShowIf, _live);
                 f.IsVisible = visible;
                 f.MatchesSearch = f.Matches(query);

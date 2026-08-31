@@ -52,6 +52,7 @@ public sealed class FieldVm : ViewModelBase
         Cli = schema["cli"].Str();
         Rebuild = schema["rebuild"].Str("none");
         Advanced = schema["advanced"].Bool();
+        Owner = schema["owner"].Str();
         Min = schema["min"].NumOrNull();
         Max = schema["max"].NumOrNull();
         Step = schema["step"].NumOrNull();
@@ -93,6 +94,24 @@ public sealed class FieldVm : ViewModelBase
     public string Cli { get; }
     public string Rebuild { get; }
     public bool Advanced { get; }
+
+    /// <summary>
+    /// Which surface draws this field's CONTROL: "" for the generated
+    /// settings form, "engine" for the Engine tab. From settings.OWNERS.
+    /// </summary>
+    /// <remarks>
+    /// Not a visibility flag and not a permission. The field is still in the
+    /// schema, still carries a value, and still travels the one settings path
+    /// - only the widget is drawn elsewhere. It exists because server_model
+    /// had TWO editors, a picker on the Engine tab and a row in this form, and
+    /// the form's copy looked like it applied on its own when it could not:
+    /// rebuild="engine" means the running server cannot be told.
+    ///
+    /// Both panels read it from the same schema key, so they cannot disagree
+    /// about where a control lives.
+    /// </remarks>
+    public string Owner { get; } = "";
+
     public double? Min { get; }
     public double? Max { get; }
     public double? Step { get; }
@@ -100,7 +119,8 @@ public sealed class FieldVm : ViewModelBase
     public IReadOnlyDictionary<string, JsonElement[]> ShowIf { get; }
 
     /// <summary>
-    /// "devices", "languages" or "ggml_models", or "" when the choices are a
+    /// "devices", "languages", "ggml_models" or "faster_whisper_models", or
+    /// "" when the choices are a
     /// literal list. Not an enum on purpose - the string comes from the Python
     /// schema, and each UI resolves the ones it knows.
     /// </summary>

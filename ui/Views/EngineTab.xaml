@@ -159,6 +159,45 @@
                 </StackPanel>
             </Border>
 
+            <!-- ==== get models ========================================= -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse Style="{StaticResource DotStyle}"
+                                 Fill="{DynamicResource PanelAccentBrush}" />
+                        <ui:TextBlock FontTypography="BodyStrong" Text="Get models" />
+                        <TextBlock Margin="12,0,0,0" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource PanelText2Brush}"
+                                   Text="{Binding Engine.CatalogNote}" />
+                    </StackPanel>
+
+                    <TextBlock Margin="18,6,0,0" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource PanelText2Brush}"
+                               Text="Straight into _models, from the repos upstream publishes - ggerganov/whisper.cpp for GGML, and the Systran/faster-whisper-* CTranslate2 conversions for the fallback. The transfer runs in the background and the pipeline keeps working; progress is on the Log tab, and the model joins both pickers the moment it lands." />
+
+                    <Grid Margin="18,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" MaxWidth="420" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ComboBox ItemsSource="{Binding Engine.DownloadKinds}"
+                                  SelectedItem="{Binding Engine.SelectedDownloadKind}"
+                                  DisplayMemberPath="Display"
+                                  ToolTip="A GGML file feeds whisper-server; a faster-whisper folder feeds the CPU/CUDA fallback." />
+                        <ComboBox Grid.Column="1" Margin="8,0,0,0"
+                                  ItemsSource="{Binding Engine.DownloadModels}"
+                                  SelectedItem="{Binding Engine.SelectedDownloadModel}"
+                                  DisplayMemberPath="Display"
+                                  ToolTip="Published download size. Anything already in _models says so rather than being hidden." />
+                        <ui:Button Grid.Column="2" Margin="8,0,0,0" Content="Download"
+                                   Appearance="Primary"
+                                   Icon="{ui:SymbolIcon ArrowDownload24}"
+                                   Command="{Binding Engine.DownloadCommand}" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
             <!-- ==== capture from this panel ============================ -->
             <Border Style="{StaticResource CardStyle}">
                 <StackPanel>

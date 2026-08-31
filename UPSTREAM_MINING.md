@@ -124,11 +124,30 @@ reflect-pads the start of the buffer by reading 200 samples from `samples[1]`
 *before* the length check runs, so anything under 201 samples reads off the end
 of the allocation. Fixed upstream on 2026-08-06.
 
-The binary in `_whisper.cpp\` sits between 2026-05-18 (it has the speaker field)
-and that fix. `ServerBackend` now refuses to send anything under a quarter
-second, which matches `buffering.MIN_FLUSH_SAMPLES`, so no code path can take
-the server down regardless of which build is installed. Rebuilding whisper.cpp
-from a current checkout closes it at the source.
+`ServerBackend` refuses to send anything under a quarter second, which matches
+`buffering.MIN_FLUSH_SAMPLES`, so no code path can take the server down
+regardless of which build is installed. That was the guard while the shipped
+binary predated the fix.
+
+**Closed at the source, 2026-08-31.** `_whisper.cpp\` is now built from
+whisper.cpp `eacbd823` (v1.9.3-77), which is well past the 2026-08-06 fix. It
+is a **CUDA** build for THIS machine and deliberately not a portable one:
+`-DCMAKE_CUDA_ARCHITECTURES=120a-real` targets the RTX 5070's sm_120 alone and
+`-DGGML_NATIVE=ON` bakes in this CPU's AVX-512, so it would fail with
+`STATUS_ILLEGAL_INSTRUCTION` on an older machine — the failure
+`start_whisper_server.cmd` already has a handler for. That is safe because
+`_whisper.cpp/` is gitignored and cannot be committed; the build to *ship* is
+`build-cuda-portable` (`GGML_NATIVE=OFF`, `GGML_BACKEND_DL=ON`,
+`GGML_CPU_ALL_VARIANTS=ON`), and the two must never be confused. The previous
+Vulkan build is kept at `_whisper.cpp.bck\` (also gitignored). Verified:
+`CUDA : ARCHS = 1200`, `AVX512 = 1`, 26 s of audio in 528 ms.
+
+One trap if this is rebuilt again: a stale CMake cache pins
+`CMAKE_CXX_COMPILER`, and `vcvars64.bat` moved from MSVC 14.44 to 14.51.
+14.51's `<yvals_core.h>` static_asserts the compiler is ≥ 19.50 and 14.44 is
+19.44, so every C++ translation unit fails with STL1001. `CMAKE_CXX_COMPILER`
+is sticky, so reconfiguring in place cannot move it — delete `build-cuda` and
+configure fresh.
 
 ### Non-speech markers no longer become captions
 

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using LiveTranscription.Ui.Bridge;
 using LiveTranscription.Ui.Settings;
@@ -52,6 +53,11 @@ public sealed class EngineVm : ViewModelBase
     private ChoiceVm? _lastAssigned;
     private string _modelsDir = "";
 
+    private Doc _catalog = Doc.None;
+    private string _downloadKind = "ggml";
+    private ChoiceVm? _downloadModel;
+    private string _catalogNote = "";
+
     public EngineVm(IEngineBridge bridge, Func<bool> isIdle,
                     Action<string, string, string> toast)
     {
@@ -78,6 +84,14 @@ public sealed class EngineVm : ViewModelBase
             () => _bridge.EngineAction("status", ""),
             () => true,
             OnError);
+
+        // No _isIdle gate. A download is NOT a lifecycle command - it does not
+        // take the single slot (App._model_download says why), so refusing it
+        // while a Restart runs would be inventing a conflict that is not there.
+        DownloadCommand = new RelayCommand(
+            Download,
+            () => _downloadModel is not null,
+            OnError);
     }
 
     public RelayCommand StartCommand { get; }
@@ -88,7 +102,57 @@ public sealed class EngineVm : ViewModelBase
 
     public RelayCommand RefreshCommand { get; }
 
+    public RelayCommand DownloadCommand { get; }
+
     public ObservableCollection<ChoiceVm> Models { get; } = new();
+
+    // ---- the catalog: what could be here, beside what is --------------------
+
+    /// <summary>The two kinds, as a picker. Values match settings.py's KINDS.</summary>
+    public ObservableCollection<ChoiceVm> DownloadKinds { get; } = new()
+    {
+        new ChoiceVm("ggml", "GGML - whisper-server (GPU)"),
+        new ChoiceVm("faster_whisper", "faster-whisper - CPU/CUDA fallback"),
+    };
+
+    public ObservableCollection<ChoiceVm> DownloadModels { get; } = new();
+
+    /// <summary>Which kind the list below is showing.</summary>
+    public ChoiceVm? SelectedDownloadKind
+    {
+        get => FindKind(_downloadKind);
+        set
+        {
+            string next = value?.Value ?? "ggml";
+            if (next == _downloadKind)
+            {
+                return;
+            }
+
+            _downloadKind = next;
+            Raise(nameof(SelectedDownloadKind));
+            FillCatalog();
+        }
+    }
+
+    public ChoiceVm? SelectedDownloadModel
+    {
+        get => _downloadModel;
+        set
+        {
+            if (Set(ref _downloadModel, value))
+            {
+                DownloadCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>"3 of 13 already in _models", or why the list is empty.</summary>
+    public string CatalogNote
+    {
+        get => _catalogNote;
+        private set => Set(ref _catalogNote, value);
+    }
 
     // ---- what is on the port ------------------------------------------------
 
@@ -296,6 +360,117 @@ public sealed class EngineVm : ViewModelBase
         StartCommand.RaiseCanExecuteChanged();
         StopCommand.RaiseCanExecuteChanged();
         RestartCommand.RaiseCanExecuteChanged();
+    }
+
+    /// <summary>A fresh catalog arrived - at connect, or after a download.</summary>
+    public void ApplyCatalog(string json)
+    {
+        _catalog = Doc.Parse(json);
+        FillCatalog();
+    }
+
+    private ChoiceVm? FindKind(string value)
+    {
+        foreach (ChoiceVm k in DownloadKinds)
+        {
+            if (k.Value == value)
+            {
+                return k;
+            }
+        }
+
+        return DownloadKinds.Count > 0 ? DownloadKinds[0] : null;
+    }
+
+    /// <summary>
+    /// Rebuild the download list for the selected kind.
+    /// </summary>
+    /// <remarks>
+    /// Models already in _models are listed and MARKED, never filtered out.
+    /// "is it already here" is the question this list is read to settle, so
+    /// dropping those rows makes a model that IS present indistinguishable
+    /// from one that cannot be had at all.
+    /// </remarks>
+    private void FillCatalog()
+    {
+        string keep = _downloadModel?.Value ?? "";
+        DownloadModels.Clear();
+
+        int here = 0;
+        int total = 0;
+        foreach (Doc m in _catalog[_downloadKind].Items())
+        {
+            string name = m["name"].Str();
+            double mb = m["size_mb"].Num();
+            bool have = m["installed"].Bool();
+            total++;
+            if (have)
+            {
+                here++;
+            }
+
+            var label = new StringBuilder(name);
+            if (mb > 0)
+            {
+                label.Append(mb >= 1000
+                    ? string.Format(CultureInfo.InvariantCulture, "   ({0:0.0} GB)", mb / 1000)
+                    : string.Format(CultureInfo.InvariantCulture, "   ({0:0} MB)", mb));
+            }
+
+            if (have)
+            {
+                label.Append("   ✓ in _models");
+            }
+
+            string note = m["note"].Str();
+            if (note.Length > 0)
+            {
+                label.Append("   - ").Append(note);
+            }
+
+            DownloadModels.Add(new ChoiceVm(name, label.ToString()));
+        }
+
+        CatalogNote = total > 0
+            ? string.Format(CultureInfo.InvariantCulture,
+                            "{0} of {1} already in _models", here, total)
+            : "catalog not loaded yet";
+
+        ChoiceVm? restore = null;
+        foreach (ChoiceVm c in DownloadModels)
+        {
+            if (c.Value == keep)
+            {
+                restore = c;
+            }
+        }
+
+        SelectedDownloadModel = restore
+            ?? (DownloadModels.Count > 0 ? DownloadModels[0] : null);
+    }
+
+    private void Download()
+    {
+        string name = _downloadModel?.Value ?? "";
+        if (name.Length == 0)
+        {
+            return;
+        }
+
+        // The name only. Python resolves it against its own catalog and builds
+        // every path from the row it matched - see model_fetch.resolve.
+        Doc ack = Doc.Parse(_bridge.DownloadModel(_downloadKind, name));
+        string error = ack["error"].Str();
+        if (error.Length > 0)
+        {
+            _toast("Error", "That model cannot be downloaded", error);
+            return;
+        }
+
+        _toast("Success", "Downloading " + name,
+               "It runs in the background and the pipeline keeps working. "
+               + "Progress is on the Log tab, and the model joins the pickers "
+               + "when it lands.");
     }
 
     private void Act(string action)

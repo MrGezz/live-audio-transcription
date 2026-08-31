@@ -377,6 +377,7 @@ public sealed class MainVm : ViewModelBase
         SettingsPane.SetPresets(hello["presets"].Raw());
 
         Engine.ApplyModels(hello["models"].Raw());
+        Engine.ApplyCatalog(hello["modelCatalog"].Raw());
         Engine.Apply(hello["engine"].Raw());
 
         _hydrated = true;
@@ -445,6 +446,9 @@ public sealed class MainVm : ViewModelBase
             case "models":
                 SettingsPane.SetModels(json);
                 Engine.ApplyModels(json);
+                break;
+            case "model_catalog":
+                Engine.ApplyCatalog(json);
                 break;
             case "presets":
                 SettingsPane.SetPresets(json);

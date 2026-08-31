@@ -465,13 +465,55 @@ class EngineModel(unittest.TestCase):
                               main_vm().SettingsPane.Field("server_model").Choices])
 
     def test_the_field_is_a_picker_over_the_bin_files_in_models(self):
-        # Found by its dynamic source, not by key: `model` is special-cased by
-        # name in FieldTemplateSelector because it is declared a path, and
-        # server_model exists partly to show that a new list does not have to
-        # be. If this ever needs a name test instead, the declaration drifted.
+        # Found by its dynamic source, never by key. Both model lists work this
+        # way now - `model` was the last key special-cased by name anywhere in
+        # the UI and is a declared choice too, so if this ever needs a name
+        # test instead, the declaration drifted.
         self.assertEqual(_field("server_model", "ChoiceSource"), "ggml_models")
         self.assertEqual([v for v, available in self._choices() if available],
                          self._ggml())
+
+    def test_the_engine_tab_is_the_only_editor_for_it(self):
+        """
+        One key, one control.
+
+        server_model had two: this picker, and a row in the generated settings
+        form. That is not a second opinion - the form's copy looked like it
+        applied on its own and could not, because rebuild="engine" means the
+        running server cannot be told. owner="engine" is how the schema says
+        which surface draws it, and Refilter is what honours that.
+
+        Asserted on IsVisible rather than on the field's absence, deliberately:
+        the field MUST still be there. It carries the value, it flushes through
+        the same path, and SetModels finds it - only the widget is gone.
+        """
+        self.assertEqual(_field("server_model", "Owner"), "engine")
+        self.assertFalse(_field("server_model", "IsVisible"),
+                         "server_model is still drawn in the settings form")
+        self.assertFalse(_field("server_model", "IsShown"))
+        # Still present and still holding its value, which is the half that
+        # would be easy to break by "hiding" it out of the collection.
+        self.assertEqual(_field("server_model", "Key"), "server_model")
+
+    def test_the_faster_whisper_model_is_a_picker_too(self):
+        """
+        `model` is a folder picker over _models, by dynamic source.
+
+        It was declared a path and special-cased by the literal name "model" in
+        FieldTemplateSelector, SettingsVm and webui/app.js. Three copies of one
+        exception is what made it worth removing: this pins the replacement, so
+        a revert to kind="path" fails here rather than showing a text box that
+        invites a hand-typed path into a REMOTE_LOCKED setting.
+        """
+        self.assertEqual(_field("model", "Kind"), "choice")
+        self.assertEqual(_field("model", "ChoiceSource"), "faster_whisper_models")
+        # Unlike server_model it stays in the form - nothing else edits it.
+        self.assertEqual(_field("model", "Owner"), "")
+        folders = [m["path"] for m in APP._list_models()["faster_whisper"]]
+        shown = on_ui(lambda: [c.Value for c in
+                               main_vm().SettingsPane.Field("model").Choices
+                               if c.Available])
+        self.assertEqual(shown, folders)
 
     def test_a_configured_model_that_is_not_there_stays_visible(self):
         # The engine's list here deliberately does not contain the configured

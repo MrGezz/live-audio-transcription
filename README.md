@@ -427,7 +427,7 @@ python live_transcription.py --translate --save --no-overlay
 python live_transcription_lite.py
 ```
 - No arguments, prints live transcription to console only. Auto backend, translates to EN.
-- **Requires a recording device** (Stereo Mix / microphone) — the Lite script has no WASAPI loopback path, so unlike the main script it cannot capture an output device.
+- Asks which capture path to use: **WASAPI loopback of the speakers** (the default — no Stereo Mix needed) or a recording device. It reuses `audio_sources.LoopbackSource`, so it captures output devices exactly as the main script does.
 
 ### Measure this machine and pick `--buffer` / `--slide`
 ```bash
@@ -461,7 +461,7 @@ Treat the result as a starting point, not a verdict. The benchmark runs on an ot
 | `--output` | auto-named | Transcript path; with `--save` and no name, defaults to `transcript_YYYYmmdd_HHMMSS.txt` |
 | `--no-overlay` | off | Console-only; skip the on-screen overlay |
 | `--backend` | `auto` | `server` (GPU) / `local` (CPU or CUDA) / `auto` (server, with automatic fallback and recovery — see [Notes](#notes)) |
-| `--server-url` | `http://127.0.0.1:8080` | whisper-server address |
+| `--server-url` | `http://127.0.0.1:8771` | whisper-server address. The port here is also the port `start_whisper_server.cmd` binds — **not** 8080, which Revit and other desktop software take |
 | `--server-model` | `ggml-base-q5_1.bin` | GGML file the GPU server loads (GPU backend only). Picked from `_models\` in either panel; remembered for the next launch |
 | `--model` | `_models\faster-whisper-medium` | Faster-Whisper model path (`local` backend, and the `auto` fallback) |
 | `--local-device` | `cpu` | Where Faster-Whisper runs: `cpu`, `cuda`, or `auto` (cuda if it loads, else cpu). `cuda` needs the CUDA 12 wheels — see [requirements.txt](requirements.txt); a CUDA 13 Toolkit does **not** supply them |
@@ -588,7 +588,8 @@ panel" rather than "no transcription" when either is missing.
 - **The model you pick is remembered.** Starting the engine on a model writes it to `_state.json` (gitignored), so the next launch starts on the same one instead of falling back to the launcher's default. A preset or a typed `--server-model` still wins over it, and deleting the file restores the default. If the remembered `.bin` is gone, the server starts on the launcher's default and the log says why rather than refusing to start.
 - **Bigger is not always slower.** On an RTX 5070 with a CUDA build, `ggml-large-v3-turbo-q8_0.bin` benchmarked *faster* than `ggml-small-q8_0.bin` end to end (553 ms vs 1243 ms) despite being three times the size, because turbo's decoder is four layers against small's twelve and decode steps dominate. Measure on your own card before assuming the small file is the fast one.
 - **`large-v3-turbo` cannot translate.** It is a distilled *transcription* model — four decoder layers instead of thirty-two — and it accepts the translate task and then decodes the audio in its own language anyway. Measured against a live `whisper-server`: with `-l ja -tr`, `ggml-large-v3-turbo-q8_0.bin` returns Japanese while `ggml-large-v3.bin` and `ggml-base-q5_1.bin` return English for the identical request. Use `large-v3`, `medium` or `base` with `--translate`; turbo is fine for same-language captions. The app detects this and says so in the log rather than labelling the caption as English — see the `--translate` flag.
-- **CPU (Faster-Whisper):** medium model recommended (`int8`). Path configurable via `--model`.
+- **CPU (Faster-Whisper):** medium recommended (`int8`). `--model` is a picker over the faster-whisper *folders* in `_models\` — a faster-whisper model is a folder (`model.bin` plus its config and tokenizer), not a single file, which is why one that has never been fetched cannot be offered.
+- **Downloading either kind from the panel.** The Engine tab has a **Get models** card in both panels: pick GGML or faster-whisper, pick a size, press Download. GGML files come from [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp/tree/main) — the same mirror `models/download-ggml-model.sh` uses — and faster-whisper folders from the [Systran](https://huggingface.co/collections/Systran/faster-whisper) CTranslate2 conversions (tiny through `large-v3`, plus `distil-large-v3`). It lands in `_models\`, the transfer runs in the background while the pipeline keeps working, progress goes to the Log tab, and the model joins both pickers when it finishes. Models already present are listed and ticked rather than hidden. The panel sends a **name**, never a URL: `model_fetch.resolve()` matches it against a fixed catalog and derives the repo, the filename and the destination itself, so a panel reachable over the network cannot turn this into "fetch that and write it into the program's folder".
 
 ## Useful Links
 

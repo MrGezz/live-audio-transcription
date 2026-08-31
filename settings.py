@@ -57,6 +57,26 @@ from whisper_backends import WHISPER_LANGUAGES
 REBUILDS = ("none", "strategy", "gate", "backend", "source", "overlay", "save",
             "restart", "engine")
 
+# Which surface owns a field's CONTROL. Not which panel shows the value - both
+# panels still receive every field, and the value still travels the one
+# settings path - only where the editable widget is drawn.
+#
+#   ""        the generated settings form, which is almost everything
+#   "engine"  the Engine tab draws it, beside the buttons that spend it
+#
+# This exists because a field whose value is only spent by a lifecycle command
+# had ended up with two editors: server_model was a picker on the Engine tab
+# AND a row in the settings form, in both panels. Two controls for one key is
+# not a second opinion, it is a bug waiting to be reported - the settings-form
+# copy looked like it applied on its own and did not, because rebuild="engine"
+# means the running server cannot be told (see REBUILDS).
+#
+# Invariant 13 still holds: a new Field appears in both panels with no UI edit.
+# owner does not exempt a field from the schema, it tells the schema-driven
+# form that this one key's widget is drawn elsewhere - and BOTH panels read it
+# from the same place, so they cannot drift apart on the answer.
+OWNERS = ("", "engine")
+
 GROUPS = [
     ("audio", "Audio capture", "Where the sound comes from."),
     ("chunking", "Chunking", "How audio is cut into windows for Whisper."),
@@ -76,12 +96,13 @@ class Field(object):
     __slots__ = ("key", "kind", "default", "group", "label", "help", "choices",
                  "minimum", "maximum", "step", "cli", "cli_negate",
                  "cli_choices", "rebuild", "advanced", "show_if", "unit",
-                 "placeholder")
+                 "placeholder", "owner")
 
     def __init__(self, key, kind, default, group, label, help="", choices=None,
                  minimum=None, maximum=None, step=None, cli=None,
                  cli_negate=False, cli_choices=True, rebuild="none",
-                 advanced=False, show_if=None, unit="", placeholder=""):
+                 advanced=False, show_if=None, unit="", placeholder="",
+                 owner=""):
         self.key = key
         self.kind = kind
         self.default = default
@@ -100,6 +121,7 @@ class Field(object):
         self.show_if = show_if or {}
         self.unit = unit
         self.placeholder = placeholder
+        self.owner = owner
 
     def as_json(self):
         return {
@@ -109,7 +131,7 @@ class Field(object):
             "step": self.step, "rebuild": self.rebuild,
             "advanced": self.advanced, "showIf": self.show_if,
             "unit": self.unit, "placeholder": self.placeholder,
-            "cli": self.cli,
+            "cli": self.cli, "owner": self.owner,
         }
 
 
@@ -294,8 +316,18 @@ SCHEMA = [
                    {"value": "local",
                     "label": "faster-whisper (CPU or CUDA)"}],
           cli="--backend", rebuild="backend"),
-    Field("server_url", "str", "http://127.0.0.1:8080", "transcription",
-          "Server URL", "Where whisper-server is listening.",
+    Field("server_url", "str", "http://127.0.0.1:8771", "transcription",
+          "Server URL",
+          "Where whisper-server is listening, and - when this machine is the "
+          "one running it - where it is STARTED. The port here is the port "
+          "start_whisper_server.cmd binds, so there is one place to change it "
+          "and not two.\n\n"
+          "8771 rather than whisper.cpp's own 8080: 8080 is the default HTTP "
+          "alternate port and half the desktop wants it. Autodesk Revit takes "
+          "it on startup, and the failure it causes is not obviously a port "
+          "clash - the server exits, the panel says the engine is not running, "
+          "and nothing mentions Revit. 8771 sits next to the browser panel's "
+          "8770 so this project's two listeners are neighbours.",
           cli="--server-url", rebuild="backend"),
     Field("server_model", "choice", "ggml-base-q5_1.bin", "transcription",
           "GPU model", "The GGML file whisper-server loads, server backend "
@@ -306,13 +338,20 @@ SCHEMA = [
           "it takes effect on the next Start or Restart on the Engine tab. "
           "Remembered for next launch once a server has started on it.",
           choices="ggml_models", cli="--server-model", cli_choices=False,
-          rebuild="engine"),
-    Field("model", "path", r"_models\faster-whisper-medium", "transcription",
+          rebuild="engine", owner="engine"),
+    Field("model", "choice", r"_models\faster-whisper-medium", "transcription",
           "faster-whisper model", "Model folder for the faster-whisper "
           "backend - the counterpart of the GGML file above. CPU by default; "
           "see the device below, which is what decides whether this runs on "
-          "the processor or the GPU.",
-          cli="--model", rebuild="backend"),
+          "the processor or the GPU.\n\n"
+          "The list is what is actually in _models\\: a faster-whisper model "
+          "is a FOLDER (model.bin plus its config and tokenizer), not a single "
+          "file, which is why a size that has never been fetched cannot appear "
+          "here. Use Get models on the Engine tab to add one - tiny through "
+          "large-v3, and distil-large-v3 - and it shows up in this list when "
+          "the download finishes.",
+          choices="faster_whisper_models", cli="--model", cli_choices=False,
+          rebuild="backend"),
     Field("local_device", "choice", "cpu", "transcription",
           "faster-whisper device",
           "Where the faster-whisper backend runs. It is CPU by default and "

@@ -21,11 +21,13 @@ namespace LiveTranscription.Ui.Views;
 /// banner naming the kind.
 /// </para>
 /// <para>
-/// The one key special-cased by name: <c>model</c> is declared in settings.py
-/// as a <c>path</c>, because on the command line it is one. In a panel it is a
-/// picker over what is actually in _models - <see cref="SettingsVm.SetModels"/>
-/// fills its choice list - so it takes the choice template. webui/app.js:381
-/// makes the same exception for the same reason.
+/// Nothing here is keyed on a field's NAME, and that is worth keeping. There
+/// used to be one exception - <c>model</c>, declared a <c>path</c> because on
+/// the command line it is one, forced to the choice template because in a
+/// panel it is a picker over _models. It is declared a <c>choice</c> with the
+/// dynamic source <c>faster_whisper_models</c> now, so the switch below picks
+/// the right template on its own and both panels dropped the special case
+/// together. A new dynamic list needs no edit to this file at all.
 /// </para>
 /// </remarks>
 public sealed class FieldTemplateSelector : DataTemplateSelector
@@ -45,19 +47,17 @@ public sealed class FieldTemplateSelector : DataTemplateSelector
             return base.SelectTemplate(item, container);
         }
 
-        DataTemplate? chosen = field.Key == "model"
-            ? ChoiceTemplate
-            : field.Kind switch
-            {
-                "bool" => BoolTemplate,
-                "int" => IntTemplate,
-                "float" => FloatTemplate,
-                "str" => StrTemplate,
-                "choice" => ChoiceTemplate,
-                "path" => PathTemplate,
-                "color" => ColorTemplate,
-                _ => null,
-            };
+        DataTemplate? chosen = field.Kind switch
+        {
+            "bool" => BoolTemplate,
+            "int" => IntTemplate,
+            "float" => FloatTemplate,
+            "str" => StrTemplate,
+            "choice" => ChoiceTemplate,
+            "path" => PathTemplate,
+            "color" => ColorTemplate,
+            _ => null,
+        };
 
         return chosen ?? throw new InvalidOperationException(
             "No template for settings field '" + field.Key + "' (kind '"

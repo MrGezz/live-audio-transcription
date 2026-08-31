@@ -257,6 +257,37 @@
              reason for a crash is written down.</p>
         </div>
 
+        <div class="engine" id="modelsCard">
+          <div class="engineHead">
+            <span class="engineDot ok"></span>
+            <b>Get models</b>
+            <span class="ttag" id="modelsDir">_models</span>
+            <span class="grow"></span>
+          </div>
+          <div class="engineWho dim tiny" id="modelsWho"></div>
+          <div class="row">
+            <label>Kind
+              <select id="dlKind" title="A GGML file feeds whisper-server; a faster-whisper folder feeds the CPU/CUDA fallback.">
+                <option value="ggml">GGML — whisper-server (GPU)</option>
+                <option value="faster_whisper">faster-whisper — CPU/CUDA fallback</option>
+              </select>
+            </label>
+            <label class="grow">Model
+              <select id="dlModel" title="Sizes are the published download size. Anything already in _models says so."></select>
+            </label>
+            <button class="btn primary" id="btnDownload">
+              <svg class="i"><use href="#i-plug"/></svg>Download</button>
+          </div>
+          <p class="dim tiny">Straight into <code>_models</code>, from the same
+             Hugging Face repos upstream publishes &mdash;
+             <code>ggerganov/whisper.cpp</code> for GGML and the
+             <code>Systran/faster-whisper-*</code> CTranslate2 conversions.
+             Progress goes to the Log tab; the pipeline keeps running while it
+             downloads, and the model joins the pickers the moment it lands.
+             Only the names in this list can be fetched &mdash; the panel never
+             sends a URL.</p>
+        </div>
+
         <div class="engine" id="sessionCard">
           <div class="engineHead">
             <span class="engineDot" id="sessionDot"></span>

@@ -87,6 +87,28 @@ public interface IEngineBridge
     string GetStatusJson();
     string GetHistoryJson(int limit);
     string GetModelsJson();
+
+    /// <summary>
+    /// Every model that COULD be fetched, next to whether it is here already.
+    /// The other half of <see cref="GetModelsJson"/>, which can only ever
+    /// report what is in _models and so cannot offer a size nobody has
+    /// downloaded yet.
+    /// </summary>
+    string GetModelCatalogJson();
+
+    /// <summary>
+    /// Start fetching one catalogued model into _models. Returns at once - the
+    /// transfer runs on a Python daemon thread and reports through the log.
+    /// </summary>
+    /// <param name="kind">ggml | faster_whisper</param>
+    /// <param name="name">
+    /// A name from <see cref="GetModelCatalogJson"/> and nothing else. Never a
+    /// URL, a path or a repo id: Python resolves this against its own catalog
+    /// and derives every path from the row it matched, so the panel cannot
+    /// name a destination even by accident.
+    /// </param>
+    /// <returns>{"started": name} or {"error": ...} as JSON.</returns>
+    string DownloadModel(string kind, string name);
     string GetDevicesJson();
     string GetEngineJson();
 
