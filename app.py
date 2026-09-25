@@ -399,7 +399,7 @@ class App(object):
         The panel's _sync_overlay, and the reason the theme is applied from
         HERE rather than read by the panel: C# must not know a settings key
         by name (CONTRIBUTING invariant 13 - the pane is generated, and
-        `model` is the one sanctioned exception), so the window is told
+        there are no name-based exceptions left), so the window is told
         "dark" or "light" and nothing else. Asynchronous, through
         PanelHost.PostTheme, like every other push: this runs on whichever
         thread emitted the settings event - the dispatcher itself when the

@@ -355,8 +355,10 @@ switch in its top bar.
 
 What it needs, and what happens without it:
 
-- **The [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet)**
-  (the *Desktop* runtime — the base or ASP.NET ones have no WPF in it) and the
+- **The [.NET Desktop Runtime](https://dotnet.microsoft.com/download/dotnet),
+  8.0 or newer** (the *Desktop* runtime — the base or ASP.NET ones have no WPF
+  in it; the panel is built against 8.0 and rolls forward to 9 or 10 when that
+  is what is installed) and the
   `pythonnet` package from `requirements.txt`. Missing either prints one
   actionable line and transcription runs without the panel — `--wpf` can never
   cost you the session.

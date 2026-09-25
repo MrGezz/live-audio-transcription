@@ -36,7 +36,9 @@ python -m venv .venv
 
 Working on the desktop panel (`ui/`) additionally needs the **.NET 8 SDK**,
 once, to run `.\build_ui.cmd`; merely *running* the panel needs only the
-Desktop Runtime, because the build output is committed under `ui/runtime`.
+Desktop Runtime (8.0 or newer — the assembly's `RollForward` is `Major`, so a
+machine with only .NET 9 or 10 hosts it), because the build output is
+committed under `ui/runtime`.
 `ui\tools\shot.py` renders every tab to a PNG for review (`--light` for the
 light pair, `--runtime DIR` to review a publish that is not `ui/runtime`
 yet), and `ui\tools\soak.py` is the leak soak — 90 minutes by default, run

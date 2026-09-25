@@ -137,15 +137,23 @@ public sealed class MicStreamer : IDisposable
         WaveFormat wf = capture.WaveFormat;
         _channels = wf.Channels;
         _bytesPerSample = wf.BitsPerSample / 8;
-        // WASAPI shared mode hands out 32-bit float; 16-bit PCM appears from
-        // some drivers. Anything else is refused rather than decoded wrongly.
-        _sourceIsFloat = wf.BitsPerSample == 32;
-        if (wf.BitsPerSample is not (32 or 16))
+        // WASAPI shared mode hands out 32-bit IEEE float; 16-bit PCM appears
+        // from some drivers, and 32-bit INTEGER PCM (24 valid bits in a
+        // 32-bit container) from others. The float question is asked of the
+        // format's encoding, not of its width: 32 bits used to be read as
+        // "float", and a 32-bit integer stream decoded that way is not quiet
+        // or loud but noise - every sample reinterpreted as an exponent.
+        // Anything else is refused rather than decoded wrongly.
+        _sourceIsFloat = IsIeeeFloat(wf);
+        bool supported = _sourceIsFloat
+            ? wf.BitsPerSample == 32
+            : wf.BitsPerSample is 32 or 16;
+        if (!supported)
         {
             capture.Dispose();
             throw new InvalidOperationException(
                 "The device delivers " + wf.BitsPerSample + "-bit samples; "
-                + "only 32-bit float and 16-bit PCM are supported.");
+                + "only 32-bit float, 32-bit PCM and 16-bit PCM are supported.");
         }
 
         _ratio = wf.SampleRate / (double)TargetRate;
@@ -193,6 +201,20 @@ public sealed class MicStreamer : IDisposable
     }
 
     public void Dispose() => Stop();
+
+    /// <summary>KSDATAFORMAT_SUBTYPE_IEEE_FLOAT - what a WAVEFORMATEXTENSIBLE
+    /// says when its samples are floats.</summary>
+    private static readonly Guid IeeeFloatSubFormat =
+        new("00000003-0000-0010-8000-00aa00389b71");
+
+    /// <summary>
+    /// Are the samples IEEE floats? The shared-mode mix format arrives as a
+    /// WAVEFORMATEXTENSIBLE, whose Encoding reads Extensible and whose
+    /// sub-format carries the answer; a plain WAVEFORMATEX says it outright.
+    /// </summary>
+    private static bool IsIeeeFloat(WaveFormat wf)
+        => wf.Encoding == WaveFormatEncoding.IeeeFloat
+           || (wf is WaveFormatExtensible ext && ext.SubFormat == IeeeFloatSubFormat);
 
     private static MMDevice FindCaptureDevice(string deviceId)
     {
@@ -246,7 +268,9 @@ public sealed class MicStreamer : IDisposable
                 int o = at + (ch * _bytesPerSample);
                 mono += _sourceIsFloat
                     ? BitConverter.ToSingle(e.Buffer, o)
-                    : BitConverter.ToInt16(e.Buffer, o) / 32768.0;
+                    : _bytesPerSample == 4
+                        ? BitConverter.ToInt32(e.Buffer, o) / 2147483648.0
+                        : BitConverter.ToInt16(e.Buffer, o) / 32768.0;
             }
 
             mono /= _channels;

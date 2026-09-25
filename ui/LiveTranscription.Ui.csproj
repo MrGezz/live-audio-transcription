@@ -23,9 +23,21 @@
     <!--
       net8.0-windows, not net10: 8.0 is the lowest Desktop runtime that ships
       WPF-UI 4.3.0's target, so a cloner needs only Microsoft.WindowsDesktop.App
-      8.0 - which rolls forward to 10 if that is all they have. Building
-      against 10 would REQUIRE 10.
+      8.0 - or, with the RollForward below, any newer one. Building against 10
+      would REQUIRE 10.
     -->
+
+    <!--
+      Major, not LatestMinor. LatestMinor never leaves the requested major:
+      a machine with only the .NET 9 or 10 Desktop Runtime installed - which is
+      what dotnet.microsoft.com hands out today - failed to host the panel with
+      "runtime 8.0 or newer was not found", and the "or newer" was a lie.
+      Major runs on 8.x when it is there and otherwise takes the next major
+      that is, which is the promise the README makes. LatestMajor would skip
+      an installed 8.x for a newer one; there is no reason to prefer that.
+      See the roll-forward table at learn.microsoft.com/dotnet/core/versions/selection.
+    -->
+    <RollForward>Major</RollForward>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <Version>0.1.0</Version>
@@ -47,7 +59,6 @@
       version tied to TargetFramework instead of drifting from it.
     -->
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
-    <RollForward>LatestMinor</RollForward>
   </PropertyGroup>
 
   <ItemGroup>

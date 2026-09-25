@@ -23,11 +23,36 @@ anywhere else in this file.
 
 ### Still open
 
+- **`Pipeline.apply` drains a rebuild inline, on the dispatcher, when the
+  session is stopped.** Found by the 2026-09-25 audit (`QAQC_WPF_PANEL.md`):
+  `SettingsVm.Flush` needs the ack synchronously, and with nothing running
+  `apply` calls `_drain_pending()` itself, so changing `backend` or `model`
+  from the pane loads a CPU model on the WPF thread — the stall invariant 12
+  exists to prevent. Invariant 19 leans on that synchronous drain for
+  `output`, so it is a Python-side design call, not a panel patch. *Done* =
+  the pane stays responsive through a backend change with the session
+  stopped, and `tests/test_remote_locked.py` still passes.
+- **The 2026-09-25 rebuild of `ui/runtime` was published on Linux.** Same SDK
+  band, `deps.json` byte-identical, zero warnings — but never loaded by
+  pythonnet on Windows. *Done* = `.\build_ui.cmd` on Windows and
+  `tests.test_panel` green, which replaces the DLL with a Windows build.
 - **A multi-day soak has never been run.** The 90-minute soak bounds drift down
   to about 36 MB/h; nothing bounds it over days. *Done* = `soak.py --minutes
   1440` against the current `ui/runtime`, passing. It cannot be closed by
   writing code — it needs a machine to sit still for a day — which is why it is
   the only thing left here.
+
+### Closed on 2026-09-25 (audit)
+
+Seven panel defects found by reading `ui/` against the Python side of each
+bridge contract, fixed together — the list, with the reasoning behind each,
+is `QAQC_WPF_PANEL.md`: `RollForward` `LatestMinor` → `Major` (a machine with
+only the .NET 9/10 Desktop Runtime could not host the panel); `ApplyAck`
+restoring `_live` on a refused edit and matching each refusal to its field
+by label; question toasts surviving a burst of errors; the capture card's
+false "not taking audio" after one second and its text never recovering;
+32-bit integer PCM decoded as float in `MicStreamer`; the engine Stop button
+lit for a process Python refuses to kill.
 
 ### Closed on 2026-08-31
 

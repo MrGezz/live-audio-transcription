@@ -386,11 +386,37 @@ public sealed class StatusVm : ViewModelBase
         // do burst, the worker logs one per failed window - buries the screen.
         while (Toasts.Count >= 4)
         {
-            Dismiss(Toasts[0]);
+            Dismiss(Evictable());
         }
 
         Toasts.Add(toast);
         return toast;
+    }
+
+    /// <summary>
+    /// The toast to drop when a fifth arrives: the oldest one that was going
+    /// to expire anyway.
+    /// </summary>
+    /// <remarks>
+    /// A <see cref="ToastLife.Never"/> toast is a question - "the backend has
+    /// nowhere to go", "auto-detect is wandering" - and ToastLife's remarks
+    /// say why it must not vanish: a question that disappears has been
+    /// answered "no" with nobody saying so. Evicting strictly oldest-first
+    /// broke that promise the moment four error lines arrived behind it,
+    /// which is exactly when the question was being asked. Only when every
+    /// slot holds a question does the oldest of those go.
+    /// </remarks>
+    private ToastVm Evictable()
+    {
+        foreach (ToastVm t in Toasts)
+        {
+            if (t.Life != ToastLife.Never)
+            {
+                return t;
+            }
+        }
+
+        return Toasts[0];
     }
 
     public void Dismiss(ToastVm toast)
