@@ -399,7 +399,7 @@ class App(object):
         The panel's _sync_overlay, and the reason the theme is applied from
         HERE rather than read by the panel: C# must not know a settings key
         by name (CONTRIBUTING invariant 13 - the pane is generated, and
-        `model` is the one sanctioned exception), so the window is told
+        there are no name-based exceptions left), so the window is told
         "dark" or "light" and nothing else. Asynchronous, through
         PanelHost.PostTheme, like every other push: this runs on whichever
         thread emitted the settings event - the dispatcher itself when the
@@ -792,7 +792,8 @@ class App(object):
         self._broadcast_presets()
         return {"saved": safe, "presets": self._list_presets()}
 
-    def _preset_load(self, name):
+    def _preset_load(self, name, drain=True):
+        """Load a preset as a patch. `drain` is Pipeline.apply's - see there."""
         safe = self._safe_preset_name(name)
         path = self._preset_file(safe)
         if path is None:
@@ -813,7 +814,7 @@ class App(object):
         # these keys cannot be applied from here anyway.
         for key in settings_mod.REMOTE_LOCKED:
             data.pop(key, None)
-        changed, errors = self.pipeline.apply(data, remote=True)
+        changed, errors = self.pipeline.apply(data, remote=True, drain=drain)
         # The list rides on EVERY return, including the error shapes. The
         # desktop panel refills its dropdown from this ack - SettingsVm's own
         # comment names the "presets" key as the contract - so a return

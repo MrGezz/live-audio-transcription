@@ -324,7 +324,15 @@ public sealed class SettingsVm : ViewModelBase
                 if (!accepted.Contains(key)
                     && _byKey.TryGetValue(key, out FieldVm? f))
                 {
-                    f.SnapBack(messages[0]);
+                    f.SnapBack(MessageFor(f, messages));
+
+                    // OnFieldEdited wrote the refused value into _live so the
+                    // showIf gates could follow the edit before the ack. The
+                    // ack said no, so the gates - and the device list, which
+                    // reads _live["capture"] - have to follow the snap-back
+                    // too, or a refused edit keeps hiding and showing rows for
+                    // a value the engine never held until the next echo.
+                    _live[key] = f.Value;
                 }
             }
 
@@ -336,6 +344,34 @@ public sealed class SettingsVm : ViewModelBase
 
         _sentKeys.Clear();
         Refilter();
+    }
+
+    /// <summary>
+    /// The refusal that belongs under <paramref name="field"/>, out of a flat
+    /// list that names no keys.
+    /// </summary>
+    /// <remarks>
+    /// settings._coerce writes every message as "&lt;label&gt;: &lt;why&gt;",
+    /// so the label is the only handle there is. Two fields refused in one
+    /// patch used to both show the first sentence - the buffer row carrying
+    /// the slide row's complaint. A message that starts with this field's
+    /// label wins; when none does (a cross-field rule that names neither, or
+    /// a wording change on the Python side) the first message is still shown
+    /// rather than nothing, because a row that snaps back silently is the
+    /// panel looking like it ignored the click.
+    /// </remarks>
+    private static string MessageFor(FieldVm field, List<string> messages)
+    {
+        string prefix = field.Label + ":";
+        foreach (string m in messages)
+        {
+            if (m.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                return m;
+            }
+        }
+
+        return messages[0];
     }
 
     /// <summary>Fill the device dropdown from a fresh enumeration.</summary>

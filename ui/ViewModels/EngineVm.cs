@@ -70,9 +70,14 @@ public sealed class EngineVm : ViewModelBase
             () => _isIdle() && !_reachable && _canStart,
             OnError);
 
+        // Gated on Ours, not merely on a PID: App._engine_stop refuses by
+        // design to kill an image that is not a whisper server, so a Stop
+        // button lit for a foreign process on the port could only ever
+        // produce an error line. The card's advice for that state already
+        // says to close the program yourself or move the port.
         StopCommand = new RelayCommand(
             () => Act("stop"),
-            () => _isIdle() && _pid is not null,
+            () => _isIdle() && _pid is not null && _ours,
             OnError);
 
         RestartCommand = new RelayCommand(

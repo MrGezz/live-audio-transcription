@@ -39,8 +39,24 @@ public sealed class AudioVm : ViewModelBase
     private readonly MicStreamer _streamer;
     private readonly DispatcherTimer _statsTimer;
 
+    /// <summary>
+    /// Consecutive refused blocks before the card says the engine is not
+    /// listening: 40 blocks of 128 ms, about five seconds.
+    /// </summary>
+    /// <remarks>
+    /// Not eight. Starting the stream flips <c>capture</c> to <c>browser</c>,
+    /// and a running pipeline applies that patch at the top of its next
+    /// worker iteration - which is after the inference in flight, up to a
+    /// whole buffer later (Pipeline.apply says so). Every block pushed in
+    /// that gap is refused, and at eight blocks the card complained after one
+    /// second about a switch that was still legitimately under way.
+    /// </remarks>
+    private const int RejectedBeforeComplaint = 40;
+
     private long _sentBytes;
     private int _rejected;
+    private bool _complained;
+    private string _streamingText = "";
     private bool _streaming;
     private bool _loopback;
     private string _captureMode = "";
@@ -155,11 +171,13 @@ public sealed class AudioVm : ViewModelBase
         _loopback = loopback;
         Interlocked.Exchange(ref _sentBytes, 0);
         _rejected = 0;
+        _complained = false;
         _startedAt = DateTime.UtcNow;
         IsStreaming = true;
-        StateText = loopback
+        _streamingText = loopback
             ? "streaming what the speakers are playing"
             : "streaming the microphone";
+        StateText = _streamingText;
         _statsTimer.Start();
     }
 
@@ -241,13 +259,23 @@ public sealed class AudioVm : ViewModelBase
         {
             Interlocked.Add(ref _sentBytes, block.Length);
             _rejected = 0;
+            if (_complained)
+            {
+                // The engine started taking audio again - the session was
+                // started, or the mode came back. The complaint used to stay
+                // on the card for the rest of the stream, over audio that was
+                // being transcribed; the state text has to follow the state.
+                _complained = false;
+                StatePostedFromCaptureThread(_streamingText);
+            }
         }
         else
         {
             // The engine is not in a push mode, or is stopped. Say so once it
             // is clearly persistent rather than a mode change racing a block.
-            if (++_rejected == 8)
+            if (++_rejected == RejectedBeforeComplaint)
             {
+                _complained = true;
                 StatePostedFromCaptureThread(
                     "the engine is not taking audio - is the session running, "
                     + "with capture set to \"browser\"?");

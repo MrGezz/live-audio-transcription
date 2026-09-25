@@ -241,8 +241,35 @@ def _bridge_class():
             # a rule written for a different threat. Deliberately not a count:
             # the list has grown twice (wpf_theme, then the three path keys)
             # and a number here would have been wrong both times.
-            changed, errors = self._app.pipeline.apply(patch, remote=False)
+            #
+            # drain=False: this runs ON the dispatcher (rule 1 above). With
+            # the session stopped, apply() would otherwise rebuild inline -
+            # and a backend change is a CPU model load, seconds with the
+            # window frozen. The ack below is still synchronous, which
+            # SettingsVm.ApplyAck needs for its snap-back; only the rebuild
+            # moves, to _lifecycle, in _drain_off_dispatcher.
+            changed, errors = self._app.pipeline.apply(patch, remote=False,
+                                                       drain=False)
+            self._drain_off_dispatcher()
             return json.dumps({"changed": changed, "errors": errors})
+
+        def _drain_off_dispatcher(self):
+            """
+            Run a rebuild that apply(drain=False) left queued - not here.
+
+            Through App._lifecycle, exactly like Start and Restart: its single
+            slot is what stops the drain building a backend at the same
+            moment a Restart does, and its busy broadcast is what greys the
+            panel's buttons and shows "Apply in progress" for the seconds a
+            model takes to load - the feedback a slow settings change should
+            have had all along. If the slot is taken the drain is skipped:
+            the setting is already accepted and echoed, and Pipeline.start
+            clears the queue because it rebuilds everything from the settings
+            anyway, so the patch lands with the next Start.
+            """
+            pipe = self._app.pipeline
+            if pipe.rebuild_pending():
+                self._app._lifecycle("apply", pipe.drain_pending)
 
         # ---- documents ---------------------------------------------------
 
@@ -306,7 +333,13 @@ def _bridge_class():
             return self._preset_ack(self._app._preset_save(str(name)))
 
         def PresetLoad(self, name):
-            return self._preset_ack(self._app._preset_load(str(name)))
+            # The same shape as ApplySettings: a preset is a patch, and one
+            # that changes the backend with the session stopped is the same
+            # model load on the same thread.
+            ack = self._preset_ack(self._app._preset_load(str(name),
+                                                          drain=False))
+            self._drain_off_dispatcher()
+            return ack
 
         def PresetDelete(self, name):
             return self._preset_ack(self._app._preset_delete(str(name)))

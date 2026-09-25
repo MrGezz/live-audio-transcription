@@ -63,7 +63,7 @@ def _make_app_class():
             # back, so they land here instead of on the floor.
             LOGS.append((level, message))
 
-        def apply(self, patch, remote=False):
+        def apply(self, patch, remote=False, drain=True):
             outer = self._outer
             clean, errors = settings_mod.validate(patch, outer.settings)
             changed = dict((k, v) for k, v in clean.items()

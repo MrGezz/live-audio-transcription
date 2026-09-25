@@ -153,6 +153,16 @@ class Pipeline(object):
                 return
             self._stop.clear()
             self._started_at = time.monotonic()
+            # Everything below is built from the settings as they stand, so a
+            # patch still queued from apply(drain=False) - one whose
+            # drain_pending() never ran, because a lifecycle command held the
+            # slot - is satisfied by construction. Left in the set, it would
+            # make the worker's first _drain_pending build the backend a
+            # SECOND time, seconds after this did: two model loads for one
+            # Start. Cleared under the lock, before the builds it is now
+            # redundant with.
+            self._pending.clear()
+            self._rebuild.clear()
             self._build_backend()
             self._build_gate()
             self._build_strategy()
@@ -275,7 +285,7 @@ class Pipeline(object):
             return None
         return safe_paths.audio_roots()
 
-    def apply(self, patch, remote=False):
+    def apply(self, patch, remote=False, drain=True):
         """
         Validate a settings patch and queue it for the worker.
 
@@ -284,6 +294,20 @@ class Pipeline(object):
         an inference. That also means a patch sent while a 3-second transcribe
         is in flight takes effect up to 3 seconds later, which is the correct
         trade and worth knowing.
+
+        With nothing running there is no worker to pick the patch up, so this
+        drains it itself - inline, on the caller's thread. `drain=False` keeps
+        the slow half of that off the caller: validation, the settings update
+        and the settings echo still happen here, synchronously, so the caller
+        gets its (applied, errors) at once; a queued REBUILD is left in place
+        for `drain_pending()` to run from wherever the caller can afford it.
+        A patch that rebuilds nothing is drained here whatever `drain` says -
+        the only work is an attribute write, and making the caller hop
+        threads for that would cost more than it saves. The desktop panel is
+        the caller this exists for: its ApplySettings runs ON the WPF
+        dispatcher, and a backend rebuild there is a CPU model load with the
+        window frozen for the duration. The socket keeps the default, because
+        its thread has nothing better to do.
 
         `remote=True` refuses the settings.REMOTE_LOCKED fields - the listener
         itself, whether a window opens on the host machine, and the three paths
@@ -354,8 +378,9 @@ class Pipeline(object):
                 self._untrusted.difference_update(changed)
             self._pending.update(changed)
             self._rebuild |= rebuild
-            if not self.alive():
-                # Nothing is running to pick the patch up, so do it here.
+            if not self.alive() and (drain or not self._rebuild):
+                # Nothing is running to pick the patch up, so do it here -
+                # unless the caller asked to run the rebuild itself.
                 self._drain_pending()
 
         self.emit("settings", dict(self.settings))
@@ -384,6 +409,30 @@ class Pipeline(object):
             self._rebuild |= wanted
             if not self.alive():
                 self._drain_pending()
+
+    def rebuild_pending(self):
+        """
+        Is a rebuild queued that no worker is going to run?
+
+        True only between an `apply(..., drain=False)` that queued one and the
+        `drain_pending()` that runs it. While the worker is alive it is always
+        False: the worker drains at the top of its next iteration, so nothing
+        is waiting on the caller.
+        """
+        with self._lock:
+            return bool(self._rebuild) and not self.alive()
+
+    def drain_pending(self):
+        """
+        Run whatever `apply(..., drain=False)` left queued. Any thread.
+
+        The second half of that call, for a caller that could not afford the
+        rebuild where it was: app.py hands it to `_lifecycle`, whose single
+        slot is what keeps it from racing a Start or Restart - which build the
+        same components, under the same settings, and must not do so at the
+        same time. A no-op when nothing is queued.
+        """
+        self._drain_pending()
 
     def _drain_pending(self):
         """Apply queued settings. Runs on the worker thread once started."""
