@@ -85,22 +85,26 @@ to confirm. That is written down at the end rather than assumed.
    2026-08-31); README and CONTRIBUTING said ".NET 8 Desktop Runtime" where
    the true requirement is 8.0 or newer.
 
-### Open — a decision for the owner, not a patch
+9. **`Pipeline.apply` drained a rebuild inline on the dispatcher when the
+   session was stopped.** `SettingsVm.Flush` calls `ApplySettings`
+   synchronously (it needs the ack), and with nothing running `apply` called
+   `_drain_pending()` itself - so changing `backend`, `model` or
+   `local_device` from the pane loaded a CPU model on the WPF thread, and
+   changing `capture`/`device` opened a device there; the browser never saw
+   it because its `apply` runs on the socket thread. Fixed on the Python
+   side, as agreed: `apply(..., drain=False)` keeps validation, the settings
+   update and the echo synchronous but leaves a queued *rebuild* for
+   `drain_pending()`; `wpf_panel.ApplySettings` and `PresetLoad` pass it and
+   hand the drain to `App._lifecycle` (`_drain_off_dispatcher`), which also
+   gives the panel its busy greying and "Apply in progress" banner for the
+   load. A patch that rebuilds nothing still drains inline. `Pipeline.start`
+   clears the queue because it rebuilds everything from the settings anyway,
+   so a drain the busy slot refused cannot become a second model load. The
+   socket keeps `drain=True`. `tests/test_apply_drain.py` (7 tests, no
+   hardware) pins all of it; invariants 12 and 19 updated.
 
-- **`Pipeline.apply` drains inline when the session is stopped, on the
-  dispatcher thread.** `SettingsVm.Flush` calls `IEngineBridge.ApplySettings`
-  synchronously (it needs the ack), and `Pipeline.apply` calls
-  `_drain_pending()` itself when nothing is running (invariant 19 relies on
-  that for `output`). So with the session stopped, changing `backend`,
-  `model` or `local_device` from the pane runs `_build_backend` — a CPU
-  model load, seconds — on the WPF thread, and changing `capture`/`device`
-  opens a device there. That is the stall invariant 12 exists to prevent; the
-  browser never sees it because its `apply` runs on the socket thread. The
-  same holds for `LoadPreset` (`_preset_load` → `apply`). Options: drain on a
-  worker when `not alive()` and the rebuild set is non-empty (changes the
-  synchronous guarantee invariant 19 leans on), or have the bridge answer the
-  validation half synchronously and hand the rebuild to `_lifecycle`. Either
-  is a Python-side design change; recorded in PENDING_WORK.
+### Open
+
 - **No unit tests exercise `StatusVm`, `AudioVm`, `TranscriptVm`,
   `MicStreamer` or `ConditionEvaluator`** beyond the startup self-test.
   `tests/test_panel.py` (19 tests) covers presets, the settings echo, the

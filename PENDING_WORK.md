@@ -23,15 +23,6 @@ anywhere else in this file.
 
 ### Still open
 
-- **`Pipeline.apply` drains a rebuild inline, on the dispatcher, when the
-  session is stopped.** Found by the 2026-09-25 audit (`QAQC_WPF_PANEL.md`):
-  `SettingsVm.Flush` needs the ack synchronously, and with nothing running
-  `apply` calls `_drain_pending()` itself, so changing `backend` or `model`
-  from the pane loads a CPU model on the WPF thread — the stall invariant 12
-  exists to prevent. Invariant 19 leans on that synchronous drain for
-  `output`, so it is a Python-side design call, not a panel patch. *Done* =
-  the pane stays responsive through a backend change with the session
-  stopped, and `tests/test_remote_locked.py` still passes.
 - **The 2026-09-25 rebuild of `ui/runtime` was published on Linux.** Same SDK
   band, `deps.json` byte-identical, zero warnings — but never loaded by
   pythonnet on Windows. *Done* = `.\build_ui.cmd` on Windows and
@@ -52,7 +43,11 @@ restoring `_live` on a refused edit and matching each refusal to its field
 by label; question toasts surviving a burst of errors; the capture card's
 false "not taking audio" after one second and its text never recovering;
 32-bit integer PCM decoded as float in `MicStreamer`; the engine Stop button
-lit for a process Python refuses to kill.
+lit for a process Python refuses to kill. Then, as a follow-up in the same
+pass: `Pipeline.apply` no longer drains a rebuild inline on the WPF
+dispatcher when the session is stopped - `apply(drain=False)` +
+`drain_pending()` through `_lifecycle`, and `start()` clears the queue
+(`tests/test_apply_drain.py`, invariants 12 and 19).
 
 ### Closed on 2026-08-31
 

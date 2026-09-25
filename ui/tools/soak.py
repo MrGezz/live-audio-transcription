@@ -108,7 +108,15 @@ class _SoakApp(object):
         def rebuild(self, *a):
             pass
 
-        def apply(self, patch, remote=False):
+        def rebuild_pending(self):
+            # Nothing here rebuilds, so the bridge never has anything to hand
+            # to _lifecycle after an apply.
+            return False
+
+        def drain_pending(self):
+            pass
+
+        def apply(self, patch, remote=False, drain=True):
             who = ("hammer" if threading.current_thread().name == "soak-hammer"
                    else "dispatcher")
             self._outer.apply_calls[who] += 1
@@ -216,7 +224,7 @@ class _SoakApp(object):
     def _preset_save(self, name):
         return {"saved": name, "presets": [name]}
 
-    def _preset_load(self, name):
+    def _preset_load(self, name, drain=True):
         return {"error": "no presets in a soak"}
 
     def _preset_delete(self, name):
@@ -225,7 +233,10 @@ class _SoakApp(object):
     def _rescan_devices(self):
         pass
 
-    def _run_benchmark(self, a):
+    def _run_benchmark(self, a, trusted=False):
+        # The keyword is the bridge's: wpf_panel.RunBenchmark passes
+        # trusted=True, and a stand-in without the parameter turned the
+        # Benchmark tab's Run button into a TypeError in every soak.
         return True
 
 
