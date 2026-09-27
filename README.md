@@ -50,7 +50,7 @@ panels' forms and the validation are all generated from it.
 - Optional **spoken-language pinning** (`--language ms`) — skips per-buffer auto-detection, which can otherwise disagree with itself on short or noisy windows.
 - **Silero voice-activity detection** — buffers with no speech in them are skipped before inference, so fans, music and room tone stop producing hallucinated captions (and stop costing GPU time). No extra dependency; disable with `--no-vad`.
 - **Two chunking strategies** (`--strategy`) — a sliding window with a duplicate filter, or wait-for-silence, which never cuts a word in half.
-- Live overlay at the bottom center of the screen; transparent, draggable, and fully restyleable.
+- Live overlay at the bottom center of the screen; transparent, draggable onto any monitor, and fully restyleable.
 - Optional transcript saving (`--save`) as **text, JSON Lines, SubRip or WebVTT** (`--transcript-format`).
 - **Presets** — save a whole configuration as JSON and load it with `--preset`, or from the panel.
 - **Lite version**: console-only output with no arguments (`live_transcription_lite.py`).

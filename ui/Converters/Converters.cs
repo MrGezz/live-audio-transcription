@@ -47,6 +47,23 @@ public sealed class BoolToVisibilityConverter : IValueConverter
         => value is Visibility v && v == Visibility.Visible;
 }
 
+/// <summary>
+/// Text as upper case, for the kickers - what the stylesheet does with
+/// text-transform: uppercase. One-way, invariant culture, so a language
+/// code or a label reads the same on every machine and the bound string is
+/// never rewritten.
+/// </summary>
+public sealed class UpperCaseConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter,
+                          CultureInfo culture)
+        => (value?.ToString() ?? "").ToUpperInvariant();
+
+    public object ConvertBack(object? value, Type targetType, object? parameter,
+                              CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
 /// <summary>Inverts a bool. For IsEnabled bindings that read better positive.</summary>
 public sealed class NotConverter : IValueConverter
 {

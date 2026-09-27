@@ -22,6 +22,7 @@ window opens on screen for a few seconds:
 import json
 import os
 import shutil
+import struct
 import sys
 import tempfile
 import threading
@@ -63,6 +64,15 @@ def _make_app_class():
             # back, so they land here instead of on the floor.
             LOGS.append((level, message))
 
+        def feed(self, pcm16le):
+            # The capture card's push path: IEngineBridge.PushAudioChunk ->
+            # Pipeline.feed. A flag rather than a source, so a test can make
+            # the engine refuse - stopped, or not in a push mode - and then
+            # take audio again, and can count what arrived.
+            outer = self._outer
+            outer.fed += 1
+            return outer.take_audio
+
         def apply(self, patch, remote=False, drain=True):
             outer = self._outer
             clean, errors = settings_mod.validate(patch, outer.settings)
@@ -85,6 +95,8 @@ def _make_app_class():
             self.settings["wpf"] = True          # as --wpf would have set it
             self._last_overlay_style = None
             self._last_panel_theme = None
+            self.take_audio = True      # what feed() answers
+            self.fed = 0                # blocks that reached it
 
     # _list_models is NOT bound: soak's stand-in serves a fixed one-entry list
     # so the panel has something stable to draw, and taking app.py's real
@@ -451,6 +463,28 @@ class Theme(unittest.TestCase):
         self.assertIn("wpf_theme", settings_mod.REMOTE_LOCKED)
         self.assertTrue(_field("wpf_theme", "LocalOnly"))
 
+    def test_the_primary_buttons_take_the_brand_run_in_both_themes(self):
+        # .btn.primary is the accent falling to #00838F. Panel.xaml overrides
+        # WPF-UI's three AccentButtonBackground keys with that run, and the
+        # override has to survive a live theme switch, which re-applies
+        # WPF-UI's own dictionary underneath.
+        import System.Windows
+
+        def run_brush():
+            w = System.Windows.Application.Current.MainWindow
+            brush = w.FindName("BtnRun").Background
+            stops = [str(s.Color) for s in brush.GradientStops]
+            return type(brush).__name__, stops
+
+        try:
+            self._edit("light")
+            self.assertEqual(on_ui(run_brush),
+                             ("LinearGradientBrush", ["#FF0097A7", "#FF00838F"]))
+        finally:
+            self._edit("dark")
+        self.assertEqual(on_ui(run_brush),
+                         ("LinearGradientBrush", ["#FF00BCD4", "#FF00838F"]))
+
 
 class EngineModel(unittest.TestCase):
     """server_model: one picker, and the choice survives the next launch."""
@@ -606,6 +640,379 @@ class EngineModel(unittest.TestCase):
                 self.assertEqual(APP._boot_model(), served[0])
             finally:
                 APP.settings["server_model"] = before
+
+
+class RefusedEdits(unittest.TestCase):
+    """ApplyAck: a refused edit snaps back everywhere it had reached."""
+
+    def test_a_refusal_takes_the_show_if_gates_back_with_it(self):
+        # Switching capture to "file" is refused while no WAV is named
+        # (settings.validate's cross-field rule). OnFieldEdited writes the
+        # new value into the live map at once so the WAV-file row can open
+        # before the ack; the refusal has to take that back, or the row stays
+        # open on a value the engine never held until the next echo - and a
+        # patch refused whole produces no echo at all.
+        #
+        # Read inside the one dispatcher action, before the stand-in's echo
+        # (posted at Background priority) can land: that is the window the
+        # fix is for.
+        def f():
+            pane = main_vm().SettingsPane
+            _clear_toasts()
+            capture = pane.Field("capture")
+            wav = pane.Field("file_path")
+            capture.TextValue = "file"
+            shown_on_edit = wav.IsVisible
+            pane.FlushNow()
+            return (shown_on_edit, wav.IsVisible, capture.TextValue,
+                    capture.Error, _toasts())
+
+        shown_on_edit, shown_after, value, error, toasts = on_ui(f)
+        self.assertTrue(shown_on_edit, "the row must follow the edit at once")
+        self.assertFalse(shown_after, "the row must follow the refusal too")
+        self.assertEqual(value, "loopback")
+        self.assertIn("no WAV file", error)
+        self.assertEqual(len(toasts), 1, toasts)
+        self.assertEqual(toasts[0][:2], ("Error", "That setting was refused"))
+        self.assertEqual(APP.settings["capture"], "loopback")
+
+    def test_two_refusals_in_one_patch_each_name_their_own_field(self):
+        # settings._coerce writes "<label>: <why>" and the ack carries one
+        # flat list, so a refused row has to find its sentence by its label.
+        # Both rows used to show the first one: the theme row carrying the
+        # capture row's complaint.
+        def f():
+            pane = main_vm().SettingsPane
+            _clear_toasts()
+            pane.Field("capture").TextValue = "bogus"
+            pane.Field("wpf_theme").TextValue = "purple"
+            pane.FlushNow()
+            return (pane.Field("capture").Error,
+                    pane.Field("wpf_theme").Error,
+                    pane.Field("capture").TextValue,
+                    pane.Field("wpf_theme").TextValue, _toasts())
+
+        capture_error, theme_error, capture, theme, toasts = on_ui(f)
+        self.assertTrue(capture_error.startswith("Capture mode: "), capture_error)
+        self.assertTrue(theme_error.startswith("Desktop panel theme: "), theme_error)
+        self.assertEqual((capture, theme), ("loopback", "dark"))
+        self.assertEqual(len(toasts), 1, toasts)
+        self.assertEqual(toasts[0][:2], ("Error", "2 settings were refused"))
+
+
+class Toasts(unittest.TestCase):
+    """StatusVm.Toast: four slots, and which one gives way."""
+
+    @staticmethod
+    def _life():
+        from LiveTranscription.Ui.ViewModels import ToastLife
+        return ToastLife
+
+    def test_a_question_survives_a_burst_of_errors(self):
+        # A ToastLife.Never toast is a question - "the backend has nowhere to
+        # go" - and it is asked exactly when the error lines arrive. Evicting
+        # oldest-first dropped it behind the fourth error, which answered the
+        # question "no" with nobody saying so.
+        def f():
+            life = self._life()
+            bar = main_vm().StatusBar
+            _clear_toasts()
+            bar.Toast("Warning", "Question", "still there?", life.Never)
+            for i in range(6):
+                bar.Toast("Error", "Error", "line {0}".format(i), life.Error)
+            titles = [str(t.Title) for t in bar.Toasts]
+            _clear_toasts()
+            return titles
+
+        titles = on_ui(f)
+        self.assertEqual(len(titles), 4, titles)
+        self.assertEqual(titles[0], "Question")
+        self.assertEqual(titles[1:], ["Error"] * 3)
+
+    def test_only_when_every_slot_is_a_question_does_the_oldest_go(self):
+        def f():
+            life = self._life()
+            bar = main_vm().StatusBar
+            _clear_toasts()
+            for i in range(5):
+                bar.Toast("Warning", "Q{0}".format(i), "?", life.Never)
+            titles = [str(t.Title) for t in bar.Toasts]
+            _clear_toasts()
+            return titles
+
+        self.assertEqual(on_ui(f), ["Q1", "Q2", "Q3", "Q4"])
+
+
+class CaptureCard(unittest.TestCase):
+    """AudioVm: when the card may say the engine is not taking audio."""
+
+    #: AudioVm.RejectedBeforeComplaint - 40 blocks of 128 ms, about five
+    #: seconds. Pinned as the number on purpose: it was 8, and one second is
+    #: inside the window a running pipeline legitimately takes to switch its
+    #: capture mode (Pipeline.apply lands at the top of the NEXT worker
+    #: iteration, which is up to one inference later).
+    BLOCKS = 40
+    COMPLAINT = "the engine is not taking audio"
+    STREAMING = "streaming the microphone"
+
+    # The streamer is NAudio and a real device, so the accounting under test
+    # is driven from the callback NAudio calls, and the state Start() would
+    # have left behind is set by hand. Reflection, by name: a rename on the
+    # C# side fails here loudly, which is the right failure.
+
+    def _feed(self, n):
+        from System import Array, Byte, Object
+        from System.Reflection import BindingFlags
+
+        def f():
+            audio = main_vm().Audio
+            flags = BindingFlags.NonPublic | BindingFlags.Instance
+            on_block = audio.GetType().GetMethod("OnBlock", flags)
+            args = Array[Object]([Array[Byte](4096)])
+            for _ in range(n):
+                on_block.Invoke(audio, args)
+        on_ui(f)
+
+    def _set(self, state, streaming_text, rejected, complained):
+        from System import Int32
+        from System.Reflection import BindingFlags
+
+        def f():
+            audio = main_vm().Audio
+            flags = BindingFlags.NonPublic | BindingFlags.Instance
+            t = audio.GetType()
+            t.GetProperty("StateText").SetValue(audio, state)
+            t.GetField("_streamingText", flags).SetValue(audio, streaming_text)
+            t.GetField("_rejected", flags).SetValue(audio, Int32(rejected))
+            t.GetField("_complained", flags).SetValue(audio, complained)
+        on_ui(f)
+
+    def _state(self):
+        return on_ui(lambda: str(main_vm().Audio.StateText))
+
+    def test_the_complaint_waits_five_seconds_and_goes_when_audio_is_taken(self):
+        fed_before = APP.fed
+        self._set(self.STREAMING, self.STREAMING, 0, False)
+        try:
+            APP.take_audio = False
+            self._feed(self.BLOCKS - 1)
+            self.assertEqual(self._state(), self.STREAMING,
+                             "complained before the switch could have landed")
+            self._feed(1)
+            self.assertTrue(self._state().startswith(self.COMPLAINT),
+                            self._state())
+
+            APP.take_audio = True
+            self._feed(1)
+            self.assertEqual(self._state(), self.STREAMING,
+                             "the complaint stayed over audio being taken")
+            self.assertEqual(APP.fed - fed_before, self.BLOCKS + 1,
+                             "the blocks never reached the bridge")
+        finally:
+            APP.take_audio = True
+            self._set("not streaming", "", 0, False)
+
+
+class EngineCard(unittest.TestCase):
+    """EngineVm: the Stop button, and whose process is on the port."""
+
+    def test_stop_is_dead_for_a_process_that_is_not_ours(self):
+        # App._engine_stop refuses, by design, to kill an image that is not a
+        # whisper server, so a Stop lit for a stranger's process on the port
+        # could only ever produce an error line. The card's advice for that
+        # state already says to close the program yourself.
+        base = APP._engine_status()
+
+        def can_stop(**changes):
+            def f():
+                engine = main_vm().Engine
+                engine.Apply(json.dumps(dict(base, **changes)))
+                return engine.StopCommand.CanExecute(None)
+            return on_ui(f)
+
+        try:
+            self.assertFalse(can_stop(reachable=False, pid=4242, ours=False))
+            self.assertTrue(can_stop(reachable=False, pid=4242, ours=True))
+            self.assertTrue(can_stop(reachable=True, pid=4242, ours=True))
+            self.assertFalse(can_stop(reachable=False, pid=None, ours=False))
+        finally:
+            on_ui(lambda: main_vm().Engine.Apply(json.dumps(base)))
+
+
+class TranscriptLines(unittest.TestCase):
+    """TranscriptLineVm: what a caption's words look like on screen."""
+
+    @staticmethod
+    def _line(words, text=""):
+        from LiveTranscription.Ui.Bridge import Doc
+        from LiveTranscription.Ui.ViewModels import TranscriptLineVm
+        entry = {"id": 1, "text": text, "language": "en", "translated": False,
+                 "backend": "server", "t_start": 0.0, "duration": 4.0,
+                 "processing_time": 1.0, "wall": 0,
+                 "words": [{"word": w, "probability": 0.9} for w in words]}
+        line = TranscriptLineVm(Doc.Parse(json.dumps(entry)), 0.6)
+        return [str(w.Text) for w in line.Words]
+
+    def test_the_first_word_does_not_carry_its_leading_space(self):
+        # Both backends keep whisper's leading space on every word - it is
+        # what lets the Runs read as prose. On the first word it is an
+        # indent the browser never shows (HTML collapses it) and a TextBlock
+        # does, so the display copy drops it. Later words keep theirs, or
+        # the line runs together.
+        self.assertEqual(self._line([" the", " quick", " fox"]),
+                         ["the", " quick", " fox"])
+
+    def test_a_blank_first_word_is_skipped_not_shown(self):
+        self.assertEqual(self._line([" ", " the", " fox"]), ["the", " fox"])
+
+    def test_the_flat_text_fallback_is_untouched(self):
+        self.assertEqual(self._line([], text="no word timings"),
+                         ["no word timings"])
+
+
+class MicDecode(unittest.TestCase):
+    """
+    PcmDecimator: the capture card's bytes, without a device.
+
+    MicStreamer owns the WASAPI endpoint and NAudio's thread; the arithmetic
+    was split out of it so that these can feed synthetic frames and read the
+    blocks back. Formats are NAudio's own WaveFormat objects, built the way
+    the drivers build them.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import clr
+        clr.AddReference(os.path.join(wpf_panel.RUNTIME_DIR, "NAudio.Core.dll"))
+
+    @staticmethod
+    def _decimator():
+        from System import Action, Array, Byte
+        from LiveTranscription.Ui.Audio import PcmDecimator
+
+        blocks = []
+        dec = PcmDecimator(Action[Array[Byte]](lambda b: blocks.append(bytes(b))))
+        return dec, blocks
+
+    @staticmethod
+    def _shorts(block):
+        return struct.unpack("<%dh" % (len(block) // 2), block)
+
+    def test_float_stereo_at_48k_becomes_mono_16k_in_exact_blocks(self):
+        from NAudio.Wave import WaveFormatExtensible
+
+        dec, blocks = self._decimator()
+        dec.Configure(WaveFormatExtensible(48000, 32, 2))   # the mix format
+        self.assertEqual(dec.Ratio, 3.0)
+        # 6144 frames at 48 kHz = 2048 output samples = exactly one block;
+        # left 0.5, right 0.25 -> mono 0.375 -> 12288.
+        frames = struct.pack("<2f", 0.5, 0.25) * 6144
+        dec.Feed(frames, len(frames))
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(len(blocks[0]), 4096, "a block is exactly 2048 samples")
+        self.assertEqual(set(self._shorts(blocks[0])), {12288})
+
+    def test_the_carry_crosses_buffer_boundaries(self):
+        # The same 6144 frames, in two buffers of unequal length, produce
+        # the identical block: the accumulator and the phase carry across
+        # calls, so a buffer boundary is not a discontinuity.
+        from NAudio.Wave import WaveFormatExtensible
+
+        frames = struct.pack("<2f", 0.5, 0.25) * 6144
+        whole, one = self._decimator()
+        whole.Configure(WaveFormatExtensible(48000, 32, 2))
+        whole.Feed(frames, len(frames))
+
+        split, two = self._decimator()
+        split.Configure(WaveFormatExtensible(48000, 32, 2))
+        cut = 1000 * 8
+        split.Feed(frames[:cut], cut)
+        self.assertEqual(two, [], "a block arrived before 2048 samples were ready")
+        split.Feed(frames[cut:], len(frames) - cut)
+        self.assertEqual(two, one)
+
+    def test_16_bit_pcm_is_read_as_integers_and_downmixed(self):
+        from NAudio.Wave import WaveFormat
+
+        dec, blocks = self._decimator()
+        dec.Configure(WaveFormat(16000, 16, 2))            # no decimation
+        frames = struct.pack("<2h", 1000, 3000) * 2048
+        dec.Feed(frames, len(frames))
+        self.assertEqual(set(self._shorts(blocks[0])), {2000})
+
+    def test_32_bit_integer_pcm_is_not_read_as_float(self):
+        # The audit's item 6: "float" used to be inferred from the width, so
+        # a driver handing out 24-in-32 integer samples was decoded as
+        # exponents. 0x40000000 is 0.5 of full scale as an integer and 2.0
+        # as a float; read wrongly it clamps to 32767, read rightly it is
+        # 16384.
+        from NAudio.Wave import WaveFormat, WaveFormatEncoding
+
+        dec, blocks = self._decimator()
+        dec.Configure(WaveFormat.CreateCustomFormat(
+            WaveFormatEncoding.Pcm, 16000, 1, 16000 * 4, 4, 32))
+        frames = struct.pack("<i", 0x40000000) * 2048
+        dec.Feed(frames, len(frames))
+        self.assertEqual(set(self._shorts(blocks[0])), {16384})
+
+    def test_out_of_range_samples_clamp_instead_of_wrapping(self):
+        # 1.5 after a gain stage is ordinary; min(1, v) * 32767 on -1.5
+        # wraps to a large positive value, a sign flip mid-word.
+        from NAudio.Wave import WaveFormat
+
+        dec, blocks = self._decimator()
+        dec.Configure(WaveFormat.CreateIeeeFloatWaveFormat(16000, 1))
+        frames = struct.pack("<f", 1.5) * 1024 + struct.pack("<f", -1.5) * 1024
+        dec.Feed(frames, len(frames))
+        shorts = self._shorts(blocks[0])
+        self.assertEqual(set(shorts[:1024]), {32767})
+        self.assertEqual(set(shorts[1024:]), {-32767})
+
+    def test_formats_it_cannot_decode_are_refused_by_name(self):
+        from System import InvalidOperationException
+        from NAudio.Wave import WaveFormat, WaveFormatEncoding
+
+        dec, _ = self._decimator()
+        for fmt in (WaveFormat(48000, 24, 2),
+                    WaveFormat.CreateCustomFormat(
+                        WaveFormatEncoding.IeeeFloat, 48000, 1, 48000 * 8, 8, 64)):
+            with self.assertRaises(InvalidOperationException) as caught:
+                dec.Configure(fmt)
+            self.assertIn(str(fmt.BitsPerSample) + "-bit", str(caught.exception))
+            self.assertIn("32-bit float, 32-bit PCM and 16-bit PCM",
+                          str(caught.exception))
+
+
+class TopBar(unittest.TestCase):
+    """The run and pause buttons: the glyph follows the word."""
+
+    def test_the_glyphs_follow_the_words(self):
+        # "Stop" sat under a play triangle and "Resume" under a pause bar for
+        # as long as the panel has existed; the browser swaps both
+        # (webui/app.js:642, :513). Read off the buttons themselves, because
+        # the swap lives in the XAML and a view-model test would not see it.
+        import System.Windows
+
+        def glyphs():
+            w = System.Windows.Application.Current.MainWindow
+            return (str(w.FindName("BtnRun").Icon.Symbol),
+                    str(w.FindName("BtnPause").Icon.Symbol))
+
+        def put(running, paused):
+            vm = main_vm()
+            vm.Running = running
+            vm.Paused = paused
+
+        was = on_ui(lambda: (main_vm().Running, main_vm().Paused))
+        try:
+            on_ui(lambda: put(True, False))
+            self.assertEqual(on_ui(glyphs), ("Stop24", "Pause24"))
+            on_ui(lambda: put(True, True))
+            self.assertEqual(on_ui(glyphs), ("Stop24", "Play24"))   # Resume
+            on_ui(lambda: put(False, False))
+            self.assertEqual(on_ui(glyphs), ("Play24", "Pause24"))
+        finally:
+            on_ui(lambda: put(*was))
 
 
 if __name__ == "__main__":

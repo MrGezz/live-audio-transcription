@@ -16,13 +16,21 @@
     <UserControl.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
 
+        <!-- .glass, with .glass-card:hover's edge: the fill lets the glows
+             behind show through, and the border takes the accent under the
+             pointer -->
         <Style x:Key="CardStyle" TargetType="Border">
-            <Setter Property="Background" Value="{DynamicResource PanelCardBrush}" />
+            <Setter Property="Background" Value="{DynamicResource PanelGlassBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource PanelLineBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="12" />
             <Setter Property="Padding" Value="16,12" />
             <Setter Property="Margin" Value="0,0,0,12" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="BorderBrush" Value="{DynamicResource PanelAccentEdgeBrush}" />
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <Style x:Key="DotStyle" TargetType="Ellipse">

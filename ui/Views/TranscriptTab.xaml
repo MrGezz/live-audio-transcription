@@ -18,6 +18,7 @@
 
     <UserControl.Resources>
         <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <conv:UpperCaseConverter x:Key="Upper" />
     </UserControl.Resources>
 
     <DockPanel Margin="14,10,14,0">
@@ -103,7 +104,12 @@
                                  tint follows the backend the way the ink
                                  below does - violet for the server, amber
                                  for local -->
+                            <!-- MinWidth so "en" and "ms" make the same pill
+                                 and the words start on one column; without
+                                 it every row's text began where its tag's
+                                 glyphs happened to end. -->
                             <Border Grid.Column="1" Margin="0,1,10,0" Padding="7,1"
+                                    MinWidth="34"
                                     CornerRadius="6" VerticalAlignment="Top"
                                     BorderThickness="1"
                                     ToolTip="{Binding Backend}">
@@ -129,7 +135,14 @@
                                         </Style.Triggers>
                                     </Style>
                                 </Border.Style>
-                                <TextBlock FontSize="10.5" Text="{Binding Tag}">
+                                <!-- .line .tag: mono, 9.5px, weight 800,
+                                     uppercase - through the converter, so
+                                     the code itself stays as the backend
+                                     sent it -->
+                                <TextBlock FontSize="9.5" FontWeight="ExtraBold"
+                                           FontFamily="Cascadia Mono, Consolas, monospace"
+                                           HorizontalAlignment="Center"
+                                           Text="{Binding Tag, Converter={StaticResource Upper}}">
                                     <TextBlock.Style>
                                         <Style TargetType="TextBlock">
                                             <Setter Property="Foreground"

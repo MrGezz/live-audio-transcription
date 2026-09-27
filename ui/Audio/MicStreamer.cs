@@ -13,23 +13,10 @@ namespace LiveTranscription.Ui.Audio;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The decimation is the worklet's, deliberately (webui/audio-worklet.js):
-/// downmix first so a stereo share does not lose one side, then box-average
-/// the input samples that fall inside each output sample's span, carrying the
-/// accumulator across DataAvailable calls so a block boundary does not put a
-/// discontinuity into the signal ten times a second. It is not a windowed
-/// sinc, but it averages rather than picks, so it rejects most of the
-/// aliasing a take-every-third-sample would fold into the speech band - and
-/// it is what the Python capture does too, so every path into the engine
-/// sounds the same to Whisper.
-/// </para>
-/// <para>
-/// Blocks are allocated at exactly their length. NAudio hands back a pooled
-/// buffer that is usually longer than the frame it just filled, and the
-/// bridge contract (see IEngineBridge.PushAudioChunk) is that the array IS
-/// the audio - marshalling slack across pythonnet 10 times a second and
-/// trusting Python to trim it puts the trim on the side that cannot see the
-/// length.
+/// This owns the endpoint and NAudio's capture thread; the arithmetic -
+/// downmix, the worklet's box-average decimation, the exact-length blocks -
+/// is <see cref="PcmDecimator"/>, split out so it can be tested without a
+/// device.
 /// </para>
 /// <para>
 /// Both callbacks fire on NAudio's capture thread. The consumer pushes the
@@ -41,26 +28,14 @@ namespace LiveTranscription.Ui.Audio;
 public sealed class MicStreamer : IDisposable
 {
     /// <summary>2048 samples = 128 ms at 16 kHz, matching the worklet.</summary>
-    public const int BlockSamples = 2048;
+    public const int BlockSamples = PcmDecimator.BlockSamples;
 
-    public const int TargetRate = 16000;
+    public const int TargetRate = PcmDecimator.TargetRate;
 
-    private readonly Action<byte[]> _onBlock;
+    private readonly PcmDecimator _decimator;
     private readonly Action<string> _onStopped;
 
     private WasapiCapture? _capture;
-    private double _ratio;
-    private int _channels;
-    private int _bytesPerSample;
-    private bool _sourceIsFloat;
-
-    // The worklet's carried state: one output sample usually straddles an
-    // input block boundary.
-    private readonly short[] _out = new short[BlockSamples];
-    private int _outLen;
-    private double _acc;
-    private int _accCount;
-    private double _phase;
 
     /// <param name="onBlock">takes each finished 4096-byte block, on the
     /// capture thread</param>
@@ -68,7 +43,24 @@ public sealed class MicStreamer : IDisposable
     /// caller did not ask for - a device unplugged mid-stream</param>
     public MicStreamer(Action<byte[]> onBlock, Action<string> onStopped)
     {
-        _onBlock = onBlock ?? throw new ArgumentNullException(nameof(onBlock));
+        if (onBlock is null)
+        {
+            throw new ArgumentNullException(nameof(onBlock));
+        }
+
+        _decimator = new PcmDecimator(block =>
+        {
+            try
+            {
+                onBlock(block);
+            }
+            catch (Exception)
+            {
+                // The consumer ends in Python. An exception there must not
+                // tear down NAudio's capture thread - dropping one block is
+                // 128 ms of audio; a dead capture thread is the session.
+            }
+        });
         _onStopped = onStopped ?? (_ => { });
     }
 
@@ -134,33 +126,17 @@ public sealed class MicStreamer : IDisposable
             ? new WasapiLoopbackCapture()
             : new WasapiCapture(FindCaptureDevice(deviceId));
 
-        WaveFormat wf = capture.WaveFormat;
-        _channels = wf.Channels;
-        _bytesPerSample = wf.BitsPerSample / 8;
-        // WASAPI shared mode hands out 32-bit IEEE float; 16-bit PCM appears
-        // from some drivers, and 32-bit INTEGER PCM (24 valid bits in a
-        // 32-bit container) from others. The float question is asked of the
-        // format's encoding, not of its width: 32 bits used to be read as
-        // "float", and a 32-bit integer stream decoded that way is not quiet
-        // or loud but noise - every sample reinterpreted as an exponent.
-        // Anything else is refused rather than decoded wrongly.
-        _sourceIsFloat = IsIeeeFloat(wf);
-        bool supported = _sourceIsFloat
-            ? wf.BitsPerSample == 32
-            : wf.BitsPerSample is 32 or 16;
-        if (!supported)
+        // The format decides float-or-integer, width and rate; a format the
+        // decimator cannot decode is refused here, before the device starts.
+        try
+        {
+            _decimator.Configure(capture.WaveFormat);
+        }
+        catch (InvalidOperationException)
         {
             capture.Dispose();
-            throw new InvalidOperationException(
-                "The device delivers " + wf.BitsPerSample + "-bit samples; "
-                + "only 32-bit float, 32-bit PCM and 16-bit PCM are supported.");
+            throw;
         }
-
-        _ratio = wf.SampleRate / (double)TargetRate;
-        _acc = 0;
-        _accCount = 0;
-        _phase = 0;
-        _outLen = 0;
 
         capture.DataAvailable += OnDataAvailable;
         capture.RecordingStopped += OnRecordingStopped;
@@ -202,20 +178,6 @@ public sealed class MicStreamer : IDisposable
 
     public void Dispose() => Stop();
 
-    /// <summary>KSDATAFORMAT_SUBTYPE_IEEE_FLOAT - what a WAVEFORMATEXTENSIBLE
-    /// says when its samples are floats.</summary>
-    private static readonly Guid IeeeFloatSubFormat =
-        new("00000003-0000-0010-8000-00aa00389b71");
-
-    /// <summary>
-    /// Are the samples IEEE floats? The shared-mode mix format arrives as a
-    /// WAVEFORMATEXTENSIBLE, whose Encoding reads Extensible and whose
-    /// sub-format carries the answer; a plain WAVEFORMATEX says it outright.
-    /// </summary>
-    private static bool IsIeeeFloat(WaveFormat wf)
-        => wf.Encoding == WaveFormatEncoding.IeeeFloat
-           || (wf is WaveFormatExtensible ext && ext.SubFormat == IeeeFloatSubFormat);
-
     private static MMDevice FindCaptureDevice(string deviceId)
     {
         using var enumerator = new MMDeviceEnumerator();
@@ -253,64 +215,5 @@ public sealed class MicStreamer : IDisposable
     }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
-    {
-        int frameBytes = _bytesPerSample * _channels;
-        int frames = e.BytesRecorded / frameBytes;
-
-        for (int frame = 0; frame < frames; frame++)
-        {
-            int at = frame * frameBytes;
-
-            // Downmix before decimating, like the worklet.
-            double mono = 0;
-            for (int ch = 0; ch < _channels; ch++)
-            {
-                int o = at + (ch * _bytesPerSample);
-                mono += _sourceIsFloat
-                    ? BitConverter.ToSingle(e.Buffer, o)
-                    : _bytesPerSample == 4
-                        ? BitConverter.ToInt32(e.Buffer, o) / 2147483648.0
-                        : BitConverter.ToInt16(e.Buffer, o) / 32768.0;
-            }
-
-            mono /= _channels;
-
-            _acc += mono;
-            _accCount++;
-            _phase++;
-            if (_phase < _ratio)
-            {
-                continue;
-            }
-
-            _phase -= _ratio;
-            double v = _accCount > 0 ? _acc / _accCount : 0;
-            _acc = 0;
-            _accCount = 0;
-
-            // Clamp BOTH ways. `min(1, v) * 32767` on a -1.5 sample - ordinary
-            // after any gain stage - wraps to a large positive value: a sign
-            // flip mid-word, not soft clipping. Same fix as the worklet's.
-            v = v > 1 ? 1 : v < -1 ? -1 : v;
-            _out[_outLen++] = (short)Math.Round(v * 32767);
-            if (_outLen < BlockSamples)
-            {
-                continue;
-            }
-
-            _outLen = 0;
-            byte[] block = new byte[BlockSamples * 2];
-            Buffer.BlockCopy(_out, 0, block, 0, block.Length);
-            try
-            {
-                _onBlock(block);
-            }
-            catch (Exception)
-            {
-                // The consumer ends in Python. An exception there must not
-                // tear down NAudio's capture thread - dropping one block is
-                // 128 ms of audio; a dead capture thread is the session.
-            }
-        }
-    }
+        => _decimator.Feed(e.Buffer, e.BytesRecorded);
 }

@@ -4,8 +4,8 @@ ui/runtime is committed, so a stale one is invisible. This is the gate.
 Every panel test loads the shipped assembly rather than building one. That is
 the right call - a clone with no .NET SDK still gets a working panel - and it
 is also why the suite cannot tell a stale binary from a fresh one: edit a .cs,
-skip build_ui.cmd, and all 17 of them still pass against the previous build,
-green and meaningless.
+skip build_ui.cmd, and every one of them still passes against the previous
+build, green and meaningless.
 
 build_ui.cmd now writes ui/runtime/sources.sha256 after a successful publish.
 These tests compare it to the working tree, so forgetting the rebuild is a red
@@ -17,7 +17,9 @@ those are exactly the machines that would otherwise never notice.
 
     .venv\Scripts\python.exe -m unittest tests.test_ui_stamp -v
 """
+import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -104,6 +106,78 @@ class TheCommittedStamp(unittest.TestCase):
         self.assertIn("ui/Themes/Charcoal.xaml", found)
         self.assertIn("ui/Views/MainWindow.xaml.cs", found)
         self.assertTrue(all(f.startswith("ui/") for f in found))
+
+
+class TheCommittedRuntime(unittest.TestCase):
+    """What ui/runtime says about the runtime it needs. No .NET required."""
+
+    def test_it_rolls_forward_across_majors(self):
+        # RollForward was LatestMinor, which never leaves the requested major:
+        # a machine with only the .NET 9 or 10 Desktop Runtime could not host
+        # the panel while the README promised "8.0 or newer". Major is the
+        # one value that keeps that promise, and this is the file the CLR
+        # host actually reads.
+        path = os.path.join(uihash.RUNTIME_DIR,
+                            "LiveTranscription.Ui.runtimeconfig.json")
+        with open(path) as fh:
+            options = json.load(fh)["runtimeOptions"]
+        self.assertEqual(options["rollForward"], "Major")
+        self.assertIn(
+            "Microsoft.WindowsDesktop.App",
+            [f["name"] for f in options["frameworks"]],
+            "pythonnet hosts the CLR from this file, and a config that "
+            "names only Microsoft.NETCore.App has no WPF in it")
+
+    def test_the_project_asks_for_the_same(self):
+        path = os.path.join(uihash.UI_DIR, "LiveTranscription.Ui.csproj")
+        with open(path) as fh:
+            self.assertIn("<RollForward>Major</RollForward>", fh.read())
+
+
+def _xaml_keys(path):
+    """The x:Key names a resource dictionary defines."""
+    with open(path, encoding="utf-8") as fh:
+        return set(re.findall(r'x:Key="([^"]+)"', fh.read()))
+
+
+class ThePanelPair(unittest.TestCase):
+    """
+    Panel.xaml and PanelLight.xaml define the same keys.
+
+    gen_theme.py enforces this for the generated Charcoal pair; the
+    hand-written pair had only a reading to rely on. A key in one theme only
+    resolves there and silently falls back in the other - the first light
+    render found exactly one such key, and the site-look block added
+    2026-09-27 doubled the pair's size.
+    """
+
+    THEMES = os.path.join(uihash.UI_DIR, "Themes")
+
+    def test_dark_and_light_define_the_same_keys(self):
+        dark = _xaml_keys(os.path.join(self.THEMES, "Panel.xaml"))
+        light = _xaml_keys(os.path.join(self.THEMES, "PanelLight.xaml"))
+        self.assertEqual(sorted(dark ^ light), [])
+        self.assertGreater(len(dark), 30)
+
+    def test_the_site_look_keys_are_both_there(self):
+        for name in ("Panel.xaml", "PanelLight.xaml"):
+            keys = _xaml_keys(os.path.join(self.THEMES, name))
+            for key in ("PanelAccentRunBrush", "AccentButtonBackground",
+                        "AccentButtonBackgroundPointerOver",
+                        "AccentButtonBackgroundPressed", "PanelAccentEdgeBrush",
+                        "PanelGlassBrush", "PanelGlowAccentBrush",
+                        "PanelGlowVioletBrush", "PanelGraphPaperBrush"):
+                self.assertIn(key, keys, name)
+
+    def test_a_key_missing_from_one_side_is_noticed(self):
+        # The comparison, proved on inputs it must catch.
+        tree = _FakeTree()
+        self.addCleanup(tree.close)
+        tree.write("Themes/A.xaml", b'<D><Brush x:Key="One"/><Brush x:Key="Two"/></D>')
+        tree.write("Themes/B.xaml", b'<D><Brush x:Key="One"/></D>')
+        a = _xaml_keys(os.path.join(tree.ui, "Themes", "A.xaml"))
+        b = _xaml_keys(os.path.join(tree.ui, "Themes", "B.xaml"))
+        self.assertEqual(sorted(a ^ b), ["Two"])
 
 
 class WhatTheDigestCovers(unittest.TestCase):

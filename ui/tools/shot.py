@@ -76,6 +76,7 @@ def _hello(app):
                     "input": [{"id": 1, "name": "Microphone (shot)"}],
                     "errors": []},
         "models": app._list_models(),
+        "modelCatalog": app._model_catalog(),
         "presets": ["meeting", "lecture"],
         "history": [soak._entry(n) for n in range(14)],
         "engine": app._engine_status(),

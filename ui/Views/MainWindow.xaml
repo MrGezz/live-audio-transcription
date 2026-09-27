@@ -35,8 +35,11 @@
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
 
+        <!-- .meter > label: a kicker - 10.5px, bold, uppercase (the text
+             is written that way; WPF has no text-transform) -->
         <Style x:Key="MeterLabel" TargetType="TextBlock">
-            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontSize" Value="10.5" />
+            <Setter Property="FontWeight" Value="Bold" />
             <Setter Property="Foreground" Value="{DynamicResource PanelMutedBrush}" />
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Margin" Value="0,0,8,0" />
@@ -160,11 +163,29 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
+        <!--
+            .bg-glow: the two ambient blobs, under everything and clipped to
+            the window so their overhang never widens the layout. The browser
+            panel and the site both open on these.
+        -->
+        <Canvas Grid.RowSpan="5" ClipToBounds="True" IsHitTestVisible="False">
+            <Ellipse Width="900" Height="900" Canvas.Left="-340" Canvas.Top="-340"
+                     Fill="{DynamicResource PanelGlowAccentBrush}" />
+            <Ellipse Width="900" Height="900" Canvas.Right="-340" Canvas.Bottom="-340"
+                     Fill="{DynamicResource PanelGlowVioletBrush}" />
+        </Canvas>
+
         <ui:TitleBar Grid.Row="0" Title="Live Transcription" ShowMaximize="True">
             <ui:TitleBar.Icon>
                 <ui:SymbolIcon Symbol="Mic24" />
             </ui:TitleBar.Icon>
         </ui:TitleBar>
+
+        <!-- #progress: the accent-to-violet rule, 2px, along the title bar's
+             bottom edge -->
+        <Border Grid.Row="0" Height="2" VerticalAlignment="Bottom" Panel.ZIndex="1"
+                IsHitTestVisible="False"
+                Background="{DynamicResource PanelAccentRunBrush}" />
 
         <!-- top actions -->
         <Border Grid.Row="1" Padding="18,6,18,8">
@@ -175,19 +196,47 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel Orientation="Horizontal">
+                    <!--
+                        The glyph follows the word. "Stop" under a play
+                        triangle, or "Resume" under a pause bar, is the button
+                        contradicting itself; the browser swaps both together
+                        (webui/app.js:642 and :513) and so does this. A style
+                        per button, not a shared one: a SymbolIcon is an
+                        element, and one instance cannot sit in two buttons.
+                    -->
                     <ui:Button x:Name="BtnRun"
                                Command="{Binding RunCommand}"
                                Content="{Binding RunButtonText}"
-                               Appearance="Primary"
-                               Icon="{ui:SymbolIcon Play24}" />
+                               Appearance="Primary">
+                        <ui:Button.Style>
+                            <Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}">
+                                <Setter Property="Icon" Value="{ui:SymbolIcon Play24}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Running}" Value="True">
+                                        <Setter Property="Icon" Value="{ui:SymbolIcon Stop24}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ui:Button.Style>
+                    </ui:Button>
                     <ui:Button Margin="8,0,0,0"
                                Command="{Binding RestartCommand}"
                                Content="Restart"
                                Icon="{ui:SymbolIcon ArrowSync24}" />
-                    <ui:Button Margin="8,0,0,0"
+                    <ui:Button x:Name="BtnPause" Margin="8,0,0,0"
                                Command="{Binding PauseCommand}"
-                               Content="{Binding PauseButtonText}"
-                               Icon="{ui:SymbolIcon Pause24}" />
+                               Content="{Binding PauseButtonText}">
+                        <ui:Button.Style>
+                            <Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}">
+                                <Setter Property="Icon" Value="{ui:SymbolIcon Pause24}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Paused}" Value="True">
+                                        <Setter Property="Icon" Value="{ui:SymbolIcon Play24}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ui:Button.Style>
+                    </ui:Button>
 
                     <ui:ProgressRing Margin="14,0,0,0" Width="20" Height="20"
                                      IsIndeterminate="True"
@@ -324,7 +373,7 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <TextBlock Style="{StaticResource MeterLabel}" Text="level" />
+                <TextBlock Style="{StaticResource MeterLabel}" Text="LEVEL" />
                 <Border Grid.Column="1" Style="{StaticResource MeterTrack}">
                     <Grid>
                         <!-- fill -->
@@ -352,7 +401,7 @@
                            Text="{Binding StatusBar.LevelText}" />
 
                 <TextBlock Grid.Row="1" Style="{StaticResource MeterLabel}"
-                           Margin="0,6,8,0" Text="speech" />
+                           Margin="0,6,8,0" Text="SPEECH" />
                 <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource MeterTrack}"
                         Margin="0,6,0,0">
                     <Grid>
@@ -418,6 +467,10 @@
                                 ContentTemplate="{StaticResource PillTemplate}" />
             </StackPanel>
         </Grid>
+
+        <!-- #heroCanvas: the faint graph paper, the content's ground -->
+        <Border Grid.Row="4" IsHitTestVisible="False"
+                Background="{DynamicResource PanelGraphPaperBrush}" />
 
         <!-- the five tabs -->
         <TabControl Grid.Row="4" Margin="10,0,10,0"

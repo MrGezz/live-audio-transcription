@@ -72,4 +72,80 @@
         <GradientStop Offset="0" Color="#FF00BCD4" />
         <GradientStop Offset="1" Color="#FF7C4DFF" />
     </LinearGradientBrush>
+    <!-- ==== the site's visual grammar ========================================
+         MrGezz.github.io is where webui/style.css gets its tokens, and these
+         are the devices the browser panel carries that this one did not,
+         each naming the CSS rule it encodes. Gradients are fills only - no
+         text is ever set IN one - and the brand run stays cyan-only so the
+         ink WPF-UI puts on an accent button keeps its 4.5:1. -->
+
+    <!-- #progress on the site, .bar i.vad in the browser: the accent to the
+         violet, left to right. The 2px rule under the title bar. -->
+    <LinearGradientBrush x:Key="PanelAccentRunBrush" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Offset="0" Color="#FF00BCD4" />
+        <GradientStop Offset="1" Color="#FF7C4DFF" />
+    </LinearGradientBrush>
+
+    <!-- .btn.primary and .brand-mark: the accent to #00838F at 135deg. These
+         three are WPF-UI's own keys for Appearance="Primary" - rest, pointer
+         over (brightness 1.1, as .btn.primary:hover) and pressed (0.9) - and
+         this dictionary is merged last, so every primary button takes the
+         run without a style of its own. The ink stays WPF-UI's. -->
+    <LinearGradientBrush x:Key="AccentButtonBackground" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Offset="0" Color="#FF00BCD4" />
+        <GradientStop Offset="1" Color="#FF00838F" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="AccentButtonBackgroundPointerOver" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Offset="0" Color="#FF00CFE9" />
+        <GradientStop Offset="1" Color="#FF00909D" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="AccentButtonBackgroundPressed" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Offset="0" Color="#FF00A9BF" />
+        <GradientStop Offset="1" Color="#FF00767F" />
+    </LinearGradientBrush>
+
+    <!-- .glass-card:hover on the site: the accent at 45%, on a card's edge
+         while the pointer is over it -->
+    <SolidColorBrush x:Key="PanelAccentEdgeBrush" Color="#7300BCD4" />
+
+    <!-- .glass: the card colour at 70% falling to 40% across 145deg, so the
+         glows behind show through as they do in the browser -->
+    <LinearGradientBrush x:Key="PanelGlassBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Offset="0" Color="#B3141E24" />
+        <GradientStop Offset="1" Color="#66141E24" />
+    </LinearGradientBrush>
+
+    <!-- .bg-glow .blob-1 / .blob-2: the accent at 50% and the violet at 40%,
+         blurred 140px at opacity .35. A radial falloff stands in for the
+         blur - Ellipse + RadialGradientBrush is the agreed device, a
+         BlurEffect at that radius is not (PENDING_WORK.md). -->
+    <RadialGradientBrush x:Key="PanelGlowAccentBrush">
+        <GradientStop Offset="0" Color="#2D00BCD4" />
+        <GradientStop Offset="1" Color="#0000BCD4" />
+    </RadialGradientBrush>
+    <RadialGradientBrush x:Key="PanelGlowVioletBrush">
+        <GradientStop Offset="0" Color="#247C4DFF" />
+        <GradientStop Offset="1" Color="#007C4DFF" />
+    </RadialGradientBrush>
+
+    <!-- #heroCanvas on the site: a 6% grid of the muted blue-grey, tiled at
+         its 26px cell; lines at .5 so a 1px pen fills one device pixel -->
+    <SolidColorBrush x:Key="PanelGridLineBrush" Color="#0F7FA0B4" />
+    <DrawingBrush x:Key="PanelGraphPaperBrush" TileMode="Tile" Viewport="0,0,26,26"
+                  ViewportUnits="Absolute" Stretch="None"
+                  AlignmentX="Left" AlignmentY="Top">
+        <DrawingBrush.Drawing>
+            <GeometryDrawing>
+                <GeometryDrawing.Geometry>
+                    <GeometryGroup>
+                        <LineGeometry StartPoint="0.5,0" EndPoint="0.5,26" />
+                        <LineGeometry StartPoint="0,0.5" EndPoint="26,0.5" />
+                    </GeometryGroup>
+                </GeometryDrawing.Geometry>
+                <GeometryDrawing.Pen>
+                    <Pen Brush="{StaticResource PanelGridLineBrush}" Thickness="1" />
+                </GeometryDrawing.Pen>
+            </GeometryDrawing>
+        </DrawingBrush.Drawing>
+    </DrawingBrush>
 </ResourceDictionary>

@@ -66,6 +66,18 @@ public sealed class TranscriptLineVm
         foreach (Doc w in entry["words"].Items())
         {
             string text = w["word"].Str();
+
+            // Whisper keeps a leading space on every word, which is what
+            // lets the Runs read as prose - except on the first one, where
+            // it is an indent. The browser never shows it because HTML
+            // collapses whitespace at the start of a line; a TextBlock does
+            // not, so it is dropped here. Only the display copy: Text and
+            // the exports keep the words exactly as the backend sent them.
+            if (words.Count == 0)
+            {
+                text = text.TrimStart();
+            }
+
             if (text.Length > 0)
             {
                 words.Add(new WordVm(text, w["probability"].NumOrNull(), warnBelow));

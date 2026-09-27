@@ -12,6 +12,15 @@ create or destroy the window without also owning Tk.
 
 What moved here, beyond the settings:
 
+  * Which screen the strip is on. Tk's winfo_screenwidth/height are the
+    PRIMARY monitor on Windows, and clamping every placement to them is what
+    pinned the strip to that screen: dragged onto a second monitor it was
+    pulled back by the next caption. Once the strip has been dragged, it is
+    kept inside the monitor under its own centre (monitor_rect, a Win32
+    call), and the vertical position is a fraction of THAT monitor. Before
+    the first drag, and wherever the monitor cannot be asked, the primary
+    screen is what it always was.
+
   * The cross-thread rule. Tk may only be touched from the thread running
     its event loop. show()/clear()/configure()/close() therefore queue a
     request and the root.after pump drains it. Calling into Tk from the
@@ -39,6 +48,7 @@ caller can carry on console-only instead of losing the whole run.
 """
 
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
@@ -55,6 +65,51 @@ WATCHDOG_LINGER_MS = 2000   # ported: read the reason, then the window goes
 # frozen and the watchdog unable to run. 64 a tick is 640 a second, far more
 # than captions arrive at, and the rest simply waits one more tick.
 MAX_DRAIN = 64
+
+
+def monitor_rect(x, y):
+    """
+    (left, top, width, height) of the monitor under a point, or None.
+
+    Windows only, and None wherever the call is unavailable or fails - the
+    caller then falls back to Tk's primary screen. MONITOR_DEFAULTTONEAREST,
+    so a point left behind by a monitor that was unplugged answers with the
+    nearest one instead of nothing, and the strip walks back into view.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class Point(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD),
+                        ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT),
+                        ("dwFlags", wintypes.DWORD)]
+
+        user32 = ctypes.windll.user32
+        user32.MonitorFromPoint.argtypes = [Point, wintypes.DWORD]
+        user32.MonitorFromPoint.restype = ctypes.c_void_p
+        user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p,
+                                           ctypes.POINTER(MonitorInfo)]
+        user32.GetMonitorInfoW.restype = wintypes.BOOL
+        handle = user32.MonitorFromPoint(Point(int(x), int(y)), 2)
+        if not handle:
+            return None
+        info = MonitorInfo()
+        info.cbSize = ctypes.sizeof(MonitorInfo)
+        if not user32.GetMonitorInfoW(handle, ctypes.byref(info)):
+            return None
+    except (OSError, AttributeError, ValueError):
+        return None
+    r = info.rcMonitor
+    if r.right <= r.left or r.bottom <= r.top:
+        return None
+    return (r.left, r.top, r.right - r.left, r.bottom - r.top)
 
 
 class OverlayUnavailable(RuntimeError):
@@ -91,6 +146,9 @@ class Overlay(object):
         self._drag_from = None
         self._pressed_at = None     # window position when the button went down
         self._x = None              # set by a drag; None means "centred"
+        # The strip's centre when the user last let go of it: which monitor
+        # to keep it on. None means "not dragged yet" - the primary screen.
+        self._anchor = None
         # None rather than True: not decided yet, so the first fg == bg
         # logs exactly once and a later restyle to the same pair does not.
         self._transparent = None
@@ -444,8 +502,7 @@ class Overlay(object):
             return
         s = self._settings
         root = self._root
-        screen_w = root.winfo_screenwidth()
-        screen_h = root.winfo_screenheight()
+        left, top, screen_w, screen_h = self._screen()
 
         width = max(160, int(screen_w * s["overlay_width_pct"] / 100.0))
         # The inline version wrapped at a hardcoded 800 px inside a
@@ -465,11 +522,31 @@ class Overlay(object):
         height = max(base, self._label.winfo_reqheight() + 2 * PAD_PX)
         height = min(height, screen_h)
 
-        x = (screen_w - width) // 2 if self._x is None else int(self._x)
-        x = max(0, min(x, max(0, screen_w - width)))
-        y = int(screen_h * s["overlay_y_pct"])
-        y = max(0, min(y, max(0, screen_h - height)))
+        # Kept inside the monitor the strip is on, not the primary one: the
+        # clamp is there so a caption cannot push the strip off screen, and
+        # "off screen" is measured against the screen it is actually on.
+        # Tk takes a negative offset for a monitor left of or above the
+        # primary; _drag already relies on that.
+        x = left + (screen_w - width) // 2 if self._x is None else int(self._x)
+        x = max(left, min(x, left + max(0, screen_w - width)))
+        y = top + int(screen_h * s["overlay_y_pct"])
+        y = max(top, min(y, top + max(0, screen_h - height)))
         root.geometry("{0}x{1}+{2}+{3}".format(width, height, x, y))
+
+    def _screen(self):
+        """
+        (left, top, width, height) to keep the strip inside of.
+
+        The monitor under the strip's own centre once it has been dragged,
+        so a strip left on a second screen stays there; Tk's primary screen
+        before the first drag, and wherever the monitor cannot be asked.
+        """
+        root = self._root
+        primary = (0, 0, root.winfo_screenwidth(), root.winfo_screenheight())
+        if self._anchor is None:
+            return primary
+        rect = monitor_rect(*self._anchor)
+        return rect if rect is not None else primary
 
     # -- dragging ----------------------------------------------------------
     def _press(self, event):
@@ -500,7 +577,14 @@ class Overlay(object):
             # Seen unprompted in a file-capture run, not theorised.
             return
         self._x = root.winfo_x()
-        y_pct = root.winfo_y() / float(max(1, root.winfo_screenheight()))
+        # Where the user let go decides the monitor, and the fraction is of
+        # that monitor's height from its top - a strip on a screen above the
+        # primary sits at a negative y, which a fraction of the primary's
+        # height cannot say.
+        self._anchor = (root.winfo_x() + root.winfo_width() // 2,
+                        root.winfo_y() + root.winfo_height() // 2)
+        _left, top, _screen_w, screen_h = self._screen()
+        y_pct = (root.winfo_y() - top) / float(max(1, screen_h))
         y_pct = round(min(1.0, max(0.0, y_pct)), 3)
         # Kept locally too, so the next configure() places the window where
         # the user left it instead of snapping back to the old y_pct.

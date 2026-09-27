@@ -77,11 +77,13 @@ import os
 import sys
 import threading
 import time
+from urllib.parse import urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, REPO)
 
+import model_fetch  # noqa: E402
 import settings as settings_mod  # noqa: E402
 import wpf_panel  # noqa: E402
 
@@ -139,6 +141,13 @@ class _SoakApp(object):
 
         def history(self, n):
             return []
+
+        def feed(self, pcm16le):
+            # The capture card's push path (IEngineBridge.PushAudioChunk ->
+            # Pipeline.feed). Nothing in a soak streams audio, so this only
+            # has to exist and answer; tests/test_panel.py's stand-in
+            # overrides it to refuse on demand.
+            return True
 
     def __init__(self):
         self.settings = dict(settings_mod.DEFAULTS)
@@ -207,12 +216,36 @@ class _SoakApp(object):
         # README show a real selection instead of the empty "(the launcher's
         # default)" entry, which is what this looked like when the key was
         # missing entirely.
-        return {"url": "http://127.0.0.1:8080", "host": "127.0.0.1",
-                "port": 8080, "reachable": True, "pid": 4242,
+        #
+        # The URL and port come from the server_url setting the way app.py's
+        # do, so this cannot advertise a port the program no longer uses:
+        # it said 8080 for a month after the default moved to 8771.
+        url = self.settings["server_url"]
+        parts = urlsplit(url)
+        return {"url": url, "host": parts.hostname or "127.0.0.1",
+                "port": parts.port or 80, "reachable": True, "pid": 4242,
                 "image": "whisper-server.exe", "ours": True,
                 "launched": False, "canStart": True, "backend": "server",
                 "model": self._list_models()["ggml"][0]["name"],
                 "models": self._list_models()["ggml"]}
+
+    def _model_catalog(self):
+        # model_fetch's own tables, marked against THIS stand-in's model list
+        # rather than the machine's _models folder, so the Get models card
+        # renders populated and renders the same on every machine. app.py
+        # sends model_fetch.catalog(), the same shape with the folder
+        # actually consulted.
+        have = set(m["name"] for m in self._list_models()["ggml"])
+        return {
+            "ggml": [{"name": name, "size_mb": mb, "note": note,
+                      "installed": name in have}
+                     for name, mb, note in model_fetch.GGML_MODELS],
+            "faster_whisper": [{"name": size, "repo": repo, "size_mb": mb,
+                                "dir": model_fetch._faster_dir(size),
+                                "installed": False}
+                               for size, repo, mb in model_fetch.FASTER_MODELS],
+            "dir": "_models",
+        }
 
     def _export_payload(self, fmt):
         return {"filename": "soak.txt", "format": fmt, "count": 0,
@@ -291,6 +324,7 @@ def main():
         "status": app.status(),
         "devices": {"loopback": [], "input": [], "errors": []},
         "models": app._list_models(),
+        "modelCatalog": app._model_catalog(),
         "presets": [],
         "history": [_entry(n) for n in range(40)],
         "engine": app._engine_status(),

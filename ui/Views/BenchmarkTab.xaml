@@ -42,8 +42,13 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <ui:TextBox PlaceholderText="(synthetic tones - give it a WAV of real speech)"
-                                ToolTip="A 16-bit PCM WAV of real speech. Synthetic tones decode almost no tokens, so they measure the encoder floor and nothing else."
+                    <!-- Short enough to be read whole at the window's default
+                         width - the box is about 225 px there, which is under
+                         thirty characters; the old text was cut off mid-word.
+                         What an empty box means is in the tip and in the
+                         warning under the table after a run. -->
+                    <ui:TextBox PlaceholderText="Real-speech WAV (optional)"
+                                ToolTip="A 16-bit PCM WAV of real speech. Left empty, synthetic tones are used - they decode almost no tokens, so they measure the encoder floor and nothing else."
                                 Text="{Binding WavPath}" />
                     <ui:Button Grid.Column="1" Margin="6,0,0,0" Content="Browse"
                                Icon="{ui:SymbolIcon FolderOpen24}"
@@ -120,7 +125,7 @@
                         IsOpen="{Binding Synthetic, Mode=OneWay}" />
 
             <Border Margin="0,8,0,0" Padding="14,10" CornerRadius="12"
-                    Background="{DynamicResource PanelCardBrush}"
+                    Background="{DynamicResource PanelGlassBrush}"
                     BorderBrush="{DynamicResource PanelLineBrush}"
                     BorderThickness="1"
                     Visibility="{Binding HasRecommendation, Converter={StaticResource BoolToVis}}">

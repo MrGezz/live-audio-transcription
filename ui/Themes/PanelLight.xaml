@@ -56,4 +56,56 @@
         <GradientStop Offset="0" Color="#FF0097A7" />
         <GradientStop Offset="1" Color="#FF651FFF" />
     </LinearGradientBrush>
+    <!-- ==== the site's visual grammar, light ====================================
+         Same keys as Panel.xaml's block, token for token (the generator's
+         parity rule, and tests/test_ui_stamp.py's), with the light palette:
+         accent #0097A7, violet #651FFF, card #FFFFFF. The blobs sit at the
+         stylesheet's light opacity, .15 against .35. -->
+    <LinearGradientBrush x:Key="PanelAccentRunBrush" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Offset="0" Color="#FF0097A7" />
+        <GradientStop Offset="1" Color="#FF651FFF" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="AccentButtonBackground" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Offset="0" Color="#FF0097A7" />
+        <GradientStop Offset="1" Color="#FF00838F" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="AccentButtonBackgroundPointerOver" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Offset="0" Color="#FF00A6B8" />
+        <GradientStop Offset="1" Color="#FF00909D" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="AccentButtonBackgroundPressed" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Offset="0" Color="#FF008896" />
+        <GradientStop Offset="1" Color="#FF00767F" />
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="PanelAccentEdgeBrush" Color="#730097A7" />
+    <LinearGradientBrush x:Key="PanelGlassBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Offset="0" Color="#B3FFFFFF" />
+        <GradientStop Offset="1" Color="#66FFFFFF" />
+    </LinearGradientBrush>
+    <RadialGradientBrush x:Key="PanelGlowAccentBrush">
+        <GradientStop Offset="0" Color="#130097A7" />
+        <GradientStop Offset="1" Color="#000097A7" />
+    </RadialGradientBrush>
+    <RadialGradientBrush x:Key="PanelGlowVioletBrush">
+        <GradientStop Offset="0" Color="#0F651FFF" />
+        <GradientStop Offset="1" Color="#00651FFF" />
+    </RadialGradientBrush>
+    <SolidColorBrush x:Key="PanelGridLineBrush" Color="#0F7FA0B4" />
+    <DrawingBrush x:Key="PanelGraphPaperBrush" TileMode="Tile" Viewport="0,0,26,26"
+                  ViewportUnits="Absolute" Stretch="None"
+                  AlignmentX="Left" AlignmentY="Top">
+        <DrawingBrush.Drawing>
+            <GeometryDrawing>
+                <GeometryDrawing.Geometry>
+                    <GeometryGroup>
+                        <LineGeometry StartPoint="0.5,0" EndPoint="0.5,26" />
+                        <LineGeometry StartPoint="0,0.5" EndPoint="26,0.5" />
+                    </GeometryGroup>
+                </GeometryDrawing.Geometry>
+                <GeometryDrawing.Pen>
+                    <Pen Brush="{StaticResource PanelGridLineBrush}" Thickness="1" />
+                </GeometryDrawing.Pen>
+            </GeometryDrawing>
+        </DrawingBrush.Drawing>
+    </DrawingBrush>
 </ResourceDictionary>

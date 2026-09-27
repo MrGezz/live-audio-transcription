@@ -105,19 +105,34 @@ to confirm. That is written down at the end rather than assumed.
 
 ### Open
 
-- **No unit tests exercise `StatusVm`, `AudioVm`, `TranscriptVm`,
-  `MicStreamer` or `ConditionEvaluator`** beyond the startup self-test.
-  `tests/test_panel.py` (19 tests) covers presets, the settings echo, the
-  theme and the engine model picker. Items 2–5 above would each have been a
-  one-assert test against the real `SettingsVm`/`StatusVm` through the
-  existing `on_ui` harness; none is added here because they cannot be run on
-  the machine this was done on.
+- **Closed 2026-09-27: items 2–5 and 7 have tests.** Ten cases in
+  `tests/test_panel.py` (29 in the module now) drive the real `SettingsVm`,
+  `StatusVm`, `AudioVm` and `EngineVm` through the `on_ui` harness, and two
+  in `tests/test_ui_stamp.py` read item 1's `rollForward` off the published
+  `runtimeconfig.json` and the csproj. Each was run against a build of the
+  pre-audit sources first and seen to fail - `PENDING_WORK.md`, "Closed on
+  2026-09-27", has the method. Item 6 followed the same day: the decode was
+  split out of `MicStreamer` into `ui/Audio/PcmDecimator.cs` and six cases
+  in `tests.test_panel.MicDecode` feed it synthetic frames (proved against a
+  build with the width-as-float bug put back). Still without a test:
+  `ConditionEvaluator` beyond its startup self-test.
 - **The informational version embeds the git hash at build time**
   (`0.1.0+<commit>`), so the committed DLL always names the commit *before*
   the one that committed it. Harmless, but it means a rebuild is never
   byte-identical across commits — worth knowing before anyone chases it.
 
 ## What "done" looks like for this pass
+
+**Done, 2026-09-27.** `.\build_ui.cmd` on Windows (SDK 8.0.424) reproduced
+`deps.json` and `runtimeconfig.json` byte-for-byte and changed only the DLL
+and the stamp; `tests.test_panel` and `tests.test_ui_stamp` are green against
+the Windows DLL. The Linux DLL this pass committed was also loaded by
+pythonnet on Windows on the way - the can-it-fail proof pointed
+`wpf_panel.RUNTIME_DIR` at it - and it hosts and passes the same tests, so
+the toolchain difference below is confirmed harmless. The Engine tab's
+Stop-on-an-occupied-port and capture-card states are asserted by
+`tests.test_panel.EngineCard` and `CaptureCard` rather than eyeballed. What
+the list below asked for, kept for the record:
 
 - `.\build_ui.cmd` on Windows, then `tests.test_panel` and
   `tests.test_ui_stamp` green. The `ui/runtime` in this pass was published on

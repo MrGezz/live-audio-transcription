@@ -18,20 +18,128 @@ arguments are written down so none of it has to be re-derived.
 recorded as decided. The five items this section used to carry were closed on
 2026-08-23; the sweep on **2026-08-31** went through every remaining "not yet",
 "one day" and "deliberately not" across all four documents and settled each
-one. Anything new goes here first, with what "done" looks like, before it goes
-anywhere else in this file.
+one; the 2026-09-25 audit's one follow-up, a Windows rebuild, closed on
+**2026-09-27**. Anything new goes here first, with what "done" looks like,
+before it goes anywhere else in this file.
 
 ### Still open
 
-- **The 2026-09-25 rebuild of `ui/runtime` was published on Linux.** Same SDK
-  band, `deps.json` byte-identical, zero warnings — but never loaded by
-  pythonnet on Windows. *Done* = `.\build_ui.cmd` on Windows and
-  `tests.test_panel` green, which replaces the DLL with a Windows build.
 - **A multi-day soak has never been run.** The 90-minute soak bounds drift down
   to about 36 MB/h; nothing bounds it over days. *Done* = `soak.py --minutes
   1440` against the current `ui/runtime`, passing. It cannot be closed by
   writing code — it needs a machine to sit still for a day — which is why it is
   the only thing left here.
+
+### Closed on 2026-09-27
+
+- **The Linux-published `ui/runtime` is a Windows build again.**
+  `.\build_ui.cmd` with SDK 8.0.424 reproduced `deps.json` and
+  `runtimeconfig.json` byte-for-byte; only the DLL and the stamp changed, and
+  `tests.test_panel` passed against it. The Linux DLL was loaded on the way
+  too - the can-it-fail runs below pointed the tests at the committed one -
+  and it hosts and passes the same tests, so the `GeneratedInternalTypeHelper`
+  difference between the two toolchains is settled as harmless.
+- **The audit's fixes have tests.** Items 2–5 and 7 of `QAQC_WPF_PANEL.md`,
+  ten cases in `tests/test_panel.py`: a refused edit takes the `showIf` gates
+  back with it before any echo; two refusals in one patch each find their own
+  sentence by label; a question toast survives six error lines; the capture
+  card complains at 40 refused blocks, not 8, and withdraws the complaint the
+  moment audio is taken again; Stop is dead for a stranger's process on the
+  port. Two more in `tests/test_ui_stamp.py` read `rollForward` (item 1) off
+  the published `runtimeconfig.json` and the csproj, with no .NET needed.
+  `AudioVm` is driven through the callback NAudio calls, by reflection,
+  because the streamer is a real device, and the state `Start()` would have
+  left behind is set the same way; a renamed private fails the test by name,
+  which is the right failure.
+- **Item 6 has tests too, after a split.** The decode and the worklet's
+  box-average decimation were inline in `MicStreamer`'s NAudio data callback,
+  behind a real device. They are `ui/Audio/PcmDecimator.cs` now - the
+  streamer owns the endpoint and the thread, the decimator owns the
+  arithmetic and takes a buffer and a byte count, which is exactly what
+  NAudio hands over - and six cases in `tests.test_panel.MicDecode` feed it
+  synthetic frames as NAudio's own `WaveFormat` objects: float stereo at
+  48 kHz becomes mono 16 kHz in exact 4096-byte blocks; the carry crosses a
+  buffer boundary (two unequal buffers give the identical block); 16-bit PCM
+  decodes as integers and downmixes; 32-bit integer PCM is not read as float
+  (0x40000000 is 16384, not the 32767 a float reading clamps to); ±1.5
+  clamps both ways instead of wrapping; 24-bit and 64-bit float are refused
+  by name. Proved on a deliberately broken build - the width-as-float bug
+  and a one-way clamp put back into a scratch copy - which failed exactly
+  those two cases and no other.
+- **The site's visual grammar, as a theme-layer patch.** The user pointed at
+  the IcZ Patcher's 2026-09-27 site-look pass and asked for the same here.
+  Same method: additive keys in `Panel.xaml` and `PanelLight.xaml`, no
+  structural change, every key naming the CSS rule it encodes and every
+  value taken from `webui/style.css` (the panel's declared source), with
+  two devices from the site itself where the browser panel has none. What
+  landed: the 2px accent-to-violet rule along the title bar (`#progress`);
+  the two ambient glows, cyan top-left and violet bottom-right (`.bg-glow`,
+  as `Ellipse` + `RadialGradientBrush` - the device the glassmorphism
+  decision below names); glass card fills that let them show through
+  (`.glass`) with the accent at 45% on a card's edge under the pointer
+  (`.glass-card:hover`); the faint 26px graph paper as the content's ground
+  (`#heroCanvas`); the brand run, accent falling to #00838F, on every
+  primary button (`.btn.primary`) - done by overriding WPF-UI's three
+  `AccentButtonBackground*` keys in the panel dictionary, which is merged
+  last, so no button needed a style; and the kickers - LEVEL / SPEECH at
+  10.5px bold, the transcript tag in mono, 9.5px, weight 800, uppercased
+  through a new `UpperCaseConverter` so the code itself stays as sent. Not
+  mirrored, on purpose: letter-spacing (no WPF property), the hover lift
+  (a Storyboard), and text set IN a gradient - every gradient is a fill.
+  Rendered in both themes with `shot.py`; the ink on the brand run is
+  WPF-UI's own and stays above 4.5:1 because the run is cyan-only.
+  `tests/test_ui_stamp.py` now checks the Panel pair defines the same keys
+  (the generator only ever checked the Charcoal pair), and the Theme test
+  reads the brand run off the Run button in both themes.
+- **The caption overlay can live on a second monitor again.** Reported by
+  the user: the strip could no longer be dragged onto the second screen.
+  It could be dragged - and the next caption pulled it back, because
+  `_place()` clamped every placement to Tk's `winfo_screenwidth` /
+  `winfo_screenheight`, which on Windows is the PRIMARY monitor, and the
+  overlay rewrite of 2026-08-18 (`04aab4e`) is where that clamp arrived;
+  the inline original never re-placed at all. `overlay.py` now keeps the
+  strip inside the monitor under its own centre once it has been dragged
+  (`monitor_rect`, `MonitorFromPoint` + `GetMonitorInfoW`, nearest-monitor
+  so an unplugged screen walks it back into view), records
+  `overlay_y_pct` as a fraction of THAT monitor from its top (a screen
+  above the primary is a negative y, which a fraction of the primary cannot
+  say), and falls back to the primary screen before the first drag and
+  wherever the call is unavailable - the old behaviour, on purpose.
+  `tests/test_overlay_screens.py` (10 cases, a stand-in root, no display)
+  pins the placement, the release arithmetic and the fallback; nine of them
+  error against the previous `overlay.py`. Also run on this machine's real
+  desktop (a 2560×1440 primary with a second 2560×1440 to its right): a
+  strip placed at x=3000 stayed at 3000 with the new code and was pulled
+  back to 1536 by the old. Not done: the horizontal position is still not
+  persisted across launches (it never was) - a fresh session opens centred
+  on the primary, one drag away.
+- **Every one of those tests was seen red before it was believed.** The
+  pre-audit sources (`aeb8a48`) were published into a scratch directory from
+  a `git worktree`, and the new classes were run against it with
+  `wpf_panel.RUNTIME_DIR` / `UI_DLL` / `UI_RUNTIMECONFIG` pointed there and
+  `uihash.is_current` stubbed true (the gate would otherwise skip the module,
+  correctly): eight red, and the two that stayed green pin behaviour the
+  audit did not change. The same run against HEAD's committed DLL was the
+  proof for the four UI changes below. `shot.py --runtime` is the same trick
+  for pictures; CONTRIBUTING says so now.
+- **Four things the screenshots showed, fixed.** The top bar's Run button
+  kept its play triangle while saying "Stop", and Pause kept its bars while
+  saying "Resume" - a style per button swaps the glyph with the word now, as
+  the browser does, and `tests.test_panel.TopBar` reads it off the buttons.
+  The transcript's language tag was an `Auto` column, so each row's words
+  began wherever its tag's glyphs ended ("ms" is wider than "en"); the pill
+  has a `MinWidth` and the words are one column. The first word of every
+  caption carried whisper's leading space as an indent - HTML collapses it,
+  a `TextBlock` does not - so `TranscriptLineVm` trims the first word's
+  display copy and nothing else (`Text` and the exports are untouched). And
+  the Benchmark tab's WAV placeholder was cut off mid-word at the default
+  width; it is under thirty characters now, with the reasoning in the tip.
+- **The engine stand-in advertised port 8080** a month after the default
+  moved to 8771, and the Get models card rendered empty in every screenshot
+  because nothing served it a catalog. `soak.py` derives the URL and port
+  from `server_url` now, serves `model_fetch`'s tables marked against its own
+  model list (so the render is the same on every machine), and answers
+  `feed()`, so the capture card's push path reaches something in a soak.
 
 ### Closed on 2026-09-25 (audit)
 
@@ -605,7 +713,11 @@ it blurs the desktop behind the window — and setting an opaque
 `ApplicationBackgroundBrush` (which is mandatory, or the window renders white
 on Windows 10 and over RDP) defeats it entirely. The agreed target is
 charcoal + cyan + Fluent depth. Ambient glows, if wanted, are `Ellipse` +
-`RadialGradientBrush` — never `BlurEffect` at a large radius.
+`RadialGradientBrush` — never `BlurEffect` at a large radius. (They were
+wanted: the 2026-09-27 site-look pass added the two glows exactly that way,
+plus translucent card fills that let them show through. Still no blur - the
+glow behind a card is a smooth gradient, which is the one backdrop that
+reads as glass without one.)
 
 **`REMOTE_LOCKED` does not apply here.** Those settings are stripped from
 browser patches because that rule is enforced by transport, not by locality.

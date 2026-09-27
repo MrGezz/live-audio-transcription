@@ -567,8 +567,8 @@ SCHEMA = [
           minimum=10, maximum=100, cli="--overlay-width", rebuild="overlay",
           show_if={"overlay": [True]}),
     Field("overlay_y_pct", "float", 0.85, "overlay", "Vertical position",
-          help="0 is the top of the screen, 1 the bottom. Dragging the "
-               "overlay updates this.",
+          help="0 is the top of the screen the overlay is on, 1 the bottom. "
+               "Dragging the overlay updates this.",
           minimum=0.0, maximum=1.0, step=0.01, cli="--overlay-y",
           rebuild="overlay", show_if={"overlay": [True]}),
     Field("overlay_clear_after", "float", 0.0, "overlay", "Clear after",
