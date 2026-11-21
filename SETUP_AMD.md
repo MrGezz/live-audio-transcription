@@ -13,6 +13,19 @@ HTTP server (`whisper-server`). The Python scripts now talk to it automatically.
 > ship `whisper-cublas` zips — drop `whisper-server.exe` + DLLs into `_whisper.cpp\`, and
 > use `start_whisper_server.cmd <model>` exactly as described. The app and launcher are
 > backend-agnostic; only the build you place in `_whisper.cpp\` differs.
+>
+> The same applies to the faster-whisper fallback on NVIDIA (`--local-device cuda`):
+> it runs on CTranslate2, which is built against CUDA 12 and loads `cublas64_12.dll`
+> by name, so a CUDA 13 Toolkit on PATH does **not** satisfy it — the symptom is a
+> model that loads fine and then dies on the first inference with
+> `Library cublas64_12.dll is not found or cannot be loaded`. The libraries are
+> pip wheels (~1 GB, listed in [requirements.txt](requirements.txt)):
+>
+>     pip install nvidia-cublas-cu12 "nvidia-cudnn-cu12==9.*"
+>
+> No PATH edit needed afterwards — `whisper_backends._add_cuda_runtime_to_path`
+> finds the wheels under the venv's site-packages and puts them on the search
+> path itself, before CTranslate2 loads.
 
 ## Architecture
 
